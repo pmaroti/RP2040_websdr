@@ -1,10 +1,31 @@
 <!doctype html>
+<!--
+  Pico Spectrum - live spectrum page for pico-adc-udp.
+
+  Served by backend/server.py at http://localhost:8080. Everything (layout,
+  styles, code) is in this one file; no external libraries are loaded.
+
+  What the page does:
+    - opens a WebSocket to the server (/ws)
+    - receives spectra as binary frames (~10 per second) and status messages
+      as JSON text frames (about once a second)
+    - draws the spectrum (line plot) and a waterfall (scrolling spectrogram)
+      on two <canvas> elements
+    - sends settings (FFT size, averaging, square wave frequency) back to the
+      server as small JSON messages
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Use the device width on phones instead of a zoomed-out desktop layout. -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pico Spectrum</title>
 <style>
+  /*
+     Colour palette as CSS variables, so the canvas drawing code can use the same
+     colours (read with getComputedStyle in the script). Dark theme, as usual
+     for spectrum displays: faint signals stand out better.
+  */
   :root {
     --bg: #0f1216;
     --panel: #171b21;
@@ -18,8 +39,10 @@
     --ok: #66bb6a;
     --bad: #ef5350;
   }
+  /* Width/height include padding and border, which makes sizing predictable. */
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
+  /* The page is a vertical flex column: header, two control bars, then the plots filling the rest. */
   body {
     background: var(--bg);
     color: var(--text);
@@ -27,6 +50,7 @@
     display: flex;
     flex-direction: column;
   }
+  /* Top bar with the stream statistics. */
   header {
     display: flex;
     flex-wrap: wrap;
@@ -37,48 +61,66 @@
     background: var(--panel);
   }
   h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  /* A label in muted colour with its value in bold; tabular-nums keeps digits from jumping around as values change. */
   .stat { color: var(--muted); white-space: nowrap; }
   .stat b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+  /* Status dot: red by default, green with class "ok". */
   .dot {
     display: inline-block; width: 9px; height: 9px; border-radius: 50%;
     background: var(--bad); margin-right: 6px; vertical-align: 0;
   }
   .dot.ok { background: var(--ok); }
+  /* Bar with the spectrum display settings. */
   .controls {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
     padding: 8px 16px; border-bottom: 1px solid var(--border);
   }
   .controls label { color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  /* Dark form controls that match the theme. */
   select, input[type=number], input[type=text], button {
     background: var(--panel); color: var(--text); border: 1px solid var(--border);
     border-radius: 4px; padding: 4px 8px; font: inherit;
   }
   input[type=number] { width: 70px; }
   button { cursor: pointer; }
+  /* Toggle buttons (Peak hold, Pause) look pressed while active. */
   button[aria-pressed=true] { background: #2b3644; border-color: var(--trace); }
   input[type=range] { width: 110px; }
+  /* Bar with the square wave frequency controls. */
   .sqw {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
     padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
   }
   .sqw label { color: var(--text); font-weight: 500; }
   #sqw-input { width: 130px; font-variant-numeric: tabular-nums; }
+  /* Red border while the typed text is not a valid frequency. */
   #sqw-input.invalid { border-color: var(--bad); }
   #sqw-set { border-color: var(--trace); }
   #sqw-state { color: var(--muted); font-variant-numeric: tabular-nums; }
   #sqw-state.err { color: var(--bad); }
   .hint { color: var(--muted); font-size: 12px; }
+  /*
+     The plot area takes all remaining height, split 3:2 between spectrum and
+     waterfall. min-height: 0 allows the flex children to shrink below their
+     content size.
+  */
   main { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 8px 16px 16px; gap: 8px; }
   .plot { position: relative; min-height: 0; }
   #spectrum-wrap { flex: 3; }
   #waterfall-wrap { flex: 2; }
+  /*
+     Canvases fill their container. Their pixel size is matched to the displayed
+     size in fitCanvas(), so drawings stay sharp.
+  */
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  /* Peak and cursor readout, top right of the spectrum plot. */
   #readout {
     position: absolute; top: 8px; right: 12px; text-align: right;
     font-variant-numeric: tabular-nums; pointer-events: none;
   }
   #readout .peak { color: var(--peak); }
   #readout .cursor { color: var(--muted); }
+  /* Semi-transparent overlay shown while no data is arriving. */
   #notice {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     color: var(--text); pointer-events: none; text-align: center; padding: 16px;
@@ -87,6 +129,7 @@
 </style>
 </head>
 <body>
+<!-- Stream status. Values are filled in by onStatus(). -->
 <header>
   <h1>Pico Spectrum</h1>
   <span class="stat"><span id="conn" class="dot"></span><span id="conn-text">connecting</span></span>
@@ -97,6 +140,11 @@
   <span class="stat">Resolution <b id="rbw">–</b></span>
 </header>
 
+<!--
+  Spectrum display settings. FFT size and averaging are sent to the server
+  (they change how it computes the spectrum); dB range, peak hold and pause
+  only affect this page.
+-->
 <div class="controls">
   <label>FFT size <select id="fft-size"></select></label>
   <label>Averaging <input id="averaging" type="range" min="0" max="0.95" step="0.05"></label>
@@ -106,6 +154,10 @@
   <button id="pause" aria-pressed="false">Pause</button>
 </div>
 
+<!--
+  Square wave generator on the Pico. The value is sent to the server, which
+  forwards it to the Pico over TCP (port 7779).
+-->
 <div class="sqw">
   <label for="sqw-input">Square wave</label>
   <input id="sqw-input" type="text" value="7.1 MHz" inputmode="decimal" spellcheck="false"
@@ -116,6 +168,7 @@
   <span class="hint" id="sqw-hint">e.g. 7.1M, 7100k, 3.5 MHz · ↑/↓ steps 1 kHz, Shift 100 kHz</span>
 </div>
 
+<!-- The two plots. The spectrum plot also holds the readout and the "waiting" overlay. -->
 <main>
   <div class="plot" id="spectrum-wrap">
     <canvas id="spectrum"></canvas>
@@ -128,14 +181,26 @@
 </main>
 
 <script>
+// Strict mode: catches common mistakes (e.g. assigning to an undeclared variable).
 "use strict";
 
+// Small helpers: $("id") finds an element; color("--name") reads a CSS colour variable.
 const $ = (id) => document.getElementById(id);
 const css = getComputedStyle(document.documentElement);
 const color = (name) => css.getPropertyValue(name).trim();
 
+// Space around the spectrum plot for the axis labels, in CSS pixels. The
+// waterfall uses the same left/right padding so both line up in frequency.
 const PAD = { left: 52, right: 12, top: 10, bottom: 26 };
 
+// Page state.
+//   ws        the WebSocket connection
+//   latest    the newest spectrum: sample rate and dB value per frequency bin
+//   peakHold  highest dB seen per bin while "Peak hold" is on, else null
+//   paused    true while "Pause" is on (incoming spectra are ignored)
+//   streaming whether the server is currently receiving data from the Pico
+//   cursorX   mouse x position over the spectrum plot, null when outside
+//   dirty     something changed and the plots need redrawing
 let ws = null;
 let latest = null;        // { rate, db: Float32Array }
 let peakHold = null;
@@ -146,6 +211,10 @@ let dirty = false;
 
 // ---------- WebSocket ----------
 
+// Open the WebSocket to the server that served this page. If the connection
+// drops (server restarted, laptop slept), retry every 1.5 s.
+// Text messages are JSON status; binary messages are spectra laid out as
+// float32 values: [sample_rate, dB(bin 0), dB(bin 1), ...].
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -165,15 +234,19 @@ function connect() {
   };
 }
 
+// Send a JSON command to the server (ignored while disconnected).
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
+// Update the connection indicator in the header.
 function setConn(ok, text) {
   $("conn").classList.toggle("ok", ok);
   $("conn-text").textContent = text;
 }
 
+// Format a frequency for the square wave box and status, e.g. 7098491.6 ->
+// "7.098492 MHz". Trailing zeros are trimmed ("7.1 MHz", not "7.100000 MHz").
 function fmtFreq(hz) {
   if (hz == null) return "–";
   if (hz === 0) return "off";
@@ -192,10 +265,18 @@ function parseFreq(text) {
   return parseFloat(m[1]) * (m[2] === "m" ? 1e6 : m[2] === "k" ? 1e3 : 1);
 }
 
+// Square wave UI state.
+//   sqwEdited  the user has typed in the box but not sent it yet; status
+//              updates must not overwrite their text
+//   sqwError   an error message currently shown; status updates leave it
+//              visible until the user types or sends something new
+//   lastGoodHz used to restore the box after "Off"
 let sqwEdited = false;     // user is typing, don't overwrite the box
 let sqwError = "";
 let lastGoodHz = 7.1e6;    // last frequency the backend accepted, for the box after Off
 
+// Send a new square wave frequency. `value` is either a number in Hz (from
+// the arrow keys or the Off button) or the text typed in the box.
 function setSquareWave(value) {
   const hz = typeof value === "number" ? value : parseFreq(value);
   const box = $("sqw-input");
@@ -214,12 +295,18 @@ function setSquareWave(value) {
   send({ squarewave: hz });
 }
 
+// Show the square wave status text; cls "err" makes it red, ok makes the dot green.
 function showSqwState(text, cls, ok) {
   $("sqw-state").textContent = text;
   $("sqw-state").className = cls;
   $("sqw-dot").classList.toggle("ok", !!ok);
 }
 
+// Handle the "squarewave" part of a status message from the server:
+//   q.requested  frequency the server is trying to keep (Hz, 0 = off, null = none)
+//   q.actual     frequency the Pico reports it produces
+//   q.state      "ok" | "offline" | "error" | "connecting"
+//   q.message    error text
 function onSquareWaveStatus(q) {
   if (!q) return;
   if (q.requested) lastGoodHz = q.requested;
@@ -238,6 +325,9 @@ function onSquareWaveStatus(q) {
   }
 }
 
+// Handle a JSON message from the server: either a status update (fills in
+// the header, controls and square wave status) or a "freq_error" reply to an
+// invalid frequency.
 function onStatus(s) {
   if (s.type === "freq_error") {
     sqwError = s.message;
@@ -267,6 +357,9 @@ function onStatus(s) {
     "Waiting for data from the Pico. Check that it is plugged in and the USB network is up (ping 192.168.7.1).";
 }
 
+// Handle a new spectrum: update peak hold, store it for drawing, add it to
+// the waterfall. Drawing itself happens in frame(), at most once per screen
+// refresh. The data is copied because `db` is a view into the message buffer.
 function onSpectrum(rate, db) {
   db = Float32Array.from(db);
   if (peakHold && peakHold.length === db.length) {
@@ -281,6 +374,9 @@ function onSpectrum(rate, db) {
 
 // ---------- Canvas helpers ----------
 
+// Make the canvas's pixel buffer match its on-screen size times the device
+// pixel ratio (2 on Retina displays), so lines are drawn at full screen
+// resolution rather than scaled up and blurry.
 function fitCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
   const r = canvas.getBoundingClientRect();
@@ -294,6 +390,8 @@ function fitCanvas(canvas) {
   return false;
 }
 
+// Read the dB range from the Top/Bottom inputs; fall back to 0..-120 dB if
+// they don't make sense (e.g. Top below Bottom).
 function dbRange() {
   let top = parseFloat($("db-max").value);
   let bottom = parseFloat($("db-min").value);
@@ -301,6 +399,8 @@ function dbRange() {
   return [bottom, top];
 }
 
+// Pick a "nice" grid step (1, 2, 2.5 or 5 times a power of ten) so that
+// `range` is divided into roughly `target` intervals.
 function niceStep(range, target) {
   const raw = range / target;
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -308,6 +408,7 @@ function niceStep(range, target) {
   return 10 * mag;
 }
 
+// Format a frequency axis label: "0", "2 kHz", "12.50 kHz", "500.0 Hz".
 function fmtHz(hz) {
   if (hz === 0) return "0";
   return hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 ? 2 : 0)} kHz` : `${hz.toFixed(hz < 10 ? 2 : 1)} Hz`;
@@ -315,6 +416,12 @@ function fmtHz(hz) {
 
 // ---------- Spectrum plot ----------
 
+// Draw the spectrum plot: grid and axis labels, the peak-hold trace (if on),
+// the live trace with a light fill below it, the peak marker and the mouse
+// cursor line, then update the text readout.
+// Coordinates are in CSS pixels; setTransform scales them to device pixels.
+// The x axis runs from 0 Hz to the Nyquist frequency (sample_rate / 2),
+// the y axis from dbMin (bottom) to dbMax (top).
 function drawSpectrum() {
   const c = $("spectrum");
   fitCanvas(c);
@@ -324,6 +431,7 @@ function drawSpectrum() {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
 
+  // Plot rectangle (x0,y0)-(x1,y1), its size (pw, ph), and yOf() mapping dB to y.
   const x0 = PAD.left, x1 = W - PAD.right, y0 = PAD.top, y1 = H - PAD.bottom;
   const pw = x1 - x0, ph = y1 - y0;
   if (pw < 10 || ph < 10) return;
@@ -338,6 +446,8 @@ function drawSpectrum() {
   g.lineWidth = 1;
   g.textAlign = "right";
   g.textBaseline = "middle";
+  // Horizontal grid lines with dB labels, about one per 40 px.
+  // (+0.5 puts 1 px lines on pixel centres, which keeps them crisp.)
   const dStep = niceStep(dbMax - dbMin, Math.max(2, ph / 40));
   for (let d = Math.ceil(dbMin / dStep) * dStep; d <= dbMax + 1e-9; d += dStep) {
     const y = Math.round(yOf(d)) + 0.5;
@@ -346,6 +456,7 @@ function drawSpectrum() {
   }
   g.textAlign = "center";
   g.textBaseline = "top";
+  // Vertical grid lines with frequency labels, about one per 90 px.
   const fStep = niceStep(nyq, Math.max(2, pw / 90));
   for (let f = 0; f <= nyq + 1e-9; f += fStep) {
     const x = Math.round(x0 + (f / nyq) * pw) + 0.5;
@@ -353,6 +464,7 @@ function drawSpectrum() {
     g.fillText(fmtHz(f), x, y1 + 6);
   }
   g.save();
+  // Rotated "dBFS" axis title.
   g.translate(12, y0 + ph / 2);
   g.rotate(-Math.PI / 2);
   g.textBaseline = "middle";
@@ -365,6 +477,9 @@ function drawSpectrum() {
 
   // Draw one point per pixel column, keeping the max of the bins it covers.
   const cols = Math.max(1, Math.floor(pw));
+  // There are usually more bins than pixels (2049 bins at FFT size 4096). For
+  // each pixel column take the highest bin it covers, so narrow peaks are never
+  // lost between pixels.
   const trace = (data, stroke, fill) => {
     g.beginPath();
     for (let px = 0; px <= cols; px++) {
@@ -386,11 +501,13 @@ function drawSpectrum() {
     }
   };
   g.save();
+  // Clip to the plot rectangle so traces don't spill over the axis labels.
   g.beginPath(); g.rect(x0, y0, pw, ph); g.clip();
   if (peakHold) trace(peakHold, color("--peak"), null);
   trace(db, color("--trace"), color("--fill"));
 
   // Peak marker (skip bin 0, which holds what's left of DC)
+  // Find the strongest bin, mark it with a small triangle.
   let pi = 1;
   for (let i = 2; i < n; i++) if (db[i] > db[pi]) pi = i;
   const pf = (pi / (n - 1)) * nyq;
@@ -399,6 +516,7 @@ function drawSpectrum() {
   g.beginPath(); g.moveTo(px, py - 4); g.lineTo(px - 5, py - 12); g.lineTo(px + 5, py - 12); g.closePath(); g.fill();
 
   // Cursor
+  // Dashed vertical line under the mouse, with its frequency and level in the readout.
   let cursorText = "";
   if (cursorX != null && cursorX >= x0 && cursorX <= x1) {
     const ci = Math.round(((cursorX - x0) / pw) * (n - 1));
@@ -417,14 +535,22 @@ function drawSpectrum() {
 
 // ---------- Waterfall ----------
 
+// ---------- Waterfall data ----------
+// Up to WF_MAX recent spectra, newest first. Each becomes one row of pixels,
+// so the waterfall scrolls down as new spectra arrive: 10 rows per second,
+// 600 rows = 1 minute of history.
 const wfLines = [];       // newest first, each a Float32Array of dB values
 const WF_MAX = 600;
 
 // Perceptual-ish dark-to-bright colormap
+// Colour gradient for the waterfall: [position 0..1, [r, g, b]].
+// Low levels are near-black blue, strong signals bright yellow/white.
 const STOPS = [
   [0.00, [5, 7, 20]], [0.25, [30, 30, 110]], [0.50, [20, 130, 170]],
   [0.70, [120, 200, 90]], [0.85, [250, 210, 60]], [1.00, [255, 255, 240]],
 ];
+// Pre-compute 256 colours (a lookup table, r,g,b per entry) by linear
+// interpolation between the stops, so drawing only needs an array lookup.
 const LUT = new Uint8ClampedArray(256 * 3);
 for (let i = 0; i < 256; i++) {
   const t = i / 255;
@@ -435,11 +561,16 @@ for (let i = 0; i < 256; i++) {
   for (let j = 0; j < 3; j++) LUT[i * 3 + j] = ca[j] + (cb[j] - ca[j]) * u;
 }
 
+// Add a spectrum as the newest waterfall row, dropping the oldest when full.
 function addWaterfallLine(db) {
   wfLines.unshift(db);
   if (wfLines.length > WF_MAX) wfLines.pop();
 }
 
+// Draw the waterfall directly into a pixel buffer (ImageData): one row per
+// stored spectrum, each pixel coloured by its level within the dB range.
+// Works in device pixels, and uses the same left/right padding as the
+// spectrum plot so the frequency axis lines up.
 function drawWaterfall() {
   const c = $("waterfall");
   fitCanvas(c);
@@ -474,6 +605,9 @@ function drawWaterfall() {
 
 // ---------- Render loop and controls ----------
 
+// ---------- Render loop and controls ----------
+// Redraw on the browser's next screen refresh, but only if something changed.
+// Spectra arrive about 10 times a second, so most frames do nothing.
 function frame() {
   if (dirty) {
     drawSpectrum();
@@ -483,30 +617,36 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
+// Event handlers for the display controls.
 window.addEventListener("resize", () => { dirty = true; });
 $("spectrum").addEventListener("mousemove", (e) => {
   cursorX = e.clientX - $("spectrum").getBoundingClientRect().left;
   dirty = true;
 });
 $("spectrum").addEventListener("mouseleave", () => { cursorX = null; dirty = true; });
+// FFT size: reset peak hold (the bins change), tell the server.
 $("fft-size").addEventListener("change", (e) => {
   peakHold = peakHold ? new Float32Array(0) : null;
   send({ fft_size: +e.target.value });
 });
 $("averaging").addEventListener("input", (e) => send({ averaging: +e.target.value }));
 for (const id of ["db-min", "db-max"]) $(id).addEventListener("input", () => { dirty = true; });
+// Peak hold toggle: start from the current spectrum when switched on.
 $("peak-hold").addEventListener("click", (e) => {
   const on = e.target.getAttribute("aria-pressed") !== "true";
   e.target.setAttribute("aria-pressed", on);
   peakHold = on ? (latest ? Float32Array.from(latest.db) : new Float32Array(0)) : null;
   dirty = true;
 });
+// Pause freezes the display; the server keeps running and other pages keep updating.
 $("pause").addEventListener("click", (e) => {
   paused = !paused;
   e.target.setAttribute("aria-pressed", paused);
   e.target.textContent = paused ? "Resume" : "Pause";
 });
 
+// Square wave box: typing marks it as edited and shows a red border while the
+// text isn't a valid frequency.
 const sqwBox = $("sqw-input");
 sqwBox.addEventListener("input", () => {
   sqwEdited = true;
@@ -514,6 +654,8 @@ sqwBox.addEventListener("input", () => {
   sqwBox.classList.toggle("invalid", parseFreq(sqwBox.value) == null && sqwBox.value.trim() !== "");
 });
 let stepTimer = null;
+// Keys: Enter sends, Escape abandons the edit, Up/Down step by 1 kHz
+// (100 kHz with Shift), rounded to whole kHz, never below 1 kHz.
 sqwBox.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     setSquareWave(sqwBox.value);
@@ -536,6 +678,7 @@ sqwBox.addEventListener("keydown", (e) => {
 $("sqw-set").addEventListener("click", () => setSquareWave(sqwBox.value));
 $("sqw-off").addEventListener("click", () => setSquareWave(0));
 
+// Start: draw the empty axes, connect to the server, start the render loop.
 drawSpectrum();
 connect();
 requestAnimationFrame(frame);

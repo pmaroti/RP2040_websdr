@@ -295,8 +295,7 @@ default 125 MHz system clock:
 - The divider has 8 fractional bits, so the reply gives the frequency actually
   produced. When 125 MHz divides evenly (e.g. 1 kHz, 10 kHz, 6.25 MHz) the
   output is exact and jitter-free. Otherwise individual edges jitter by up to one
-  PIO clock period (8 ns times the divider) while the average frequency stays
-  right.
+  system clock (8 ns) while the average frequency stays right.
 - Retuning within the same range changes only the divider, so the pin keeps
   toggling without a glitch.
 - The pin is a 3.3 V push-pull output with 12 mA drive and fast slew. Above

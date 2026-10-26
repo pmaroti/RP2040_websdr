@@ -23,6 +23,33 @@
  *
  */
 
+/*
+ * USB descriptors for the pico-adc-udp network adapter.
+ *
+ * This file comes from TinyUSB's examples/device/net_lwip_webserver, with
+ * only the manufacturer, product and interface strings changed.
+ *
+ * What descriptors are: when a USB device is plugged in, the host asks it a
+ * series of questions ("GET DESCRIPTOR" requests) to learn what it is. The
+ * answers are fixed byte arrays defined below, handed to TinyUSB through the
+ * tud_descriptor_*_cb() callbacks:
+ *
+ *   device descriptor         who am I: USB version, vendor/product ID,
+ *                             how many configurations
+ *   configuration descriptor  which interfaces and endpoints I have; here a
+ *                             CDC-NCM (or RNDIS / CDC-ECM) network interface
+ *   BOS + MS OS 2.0           (NCM only) tells Windows which built-in driver
+ *                             to load, so no .inf file is needed
+ *   string descriptors        human-readable names, the serial number, and
+ *                             the MAC address the host's adapter should use
+ *
+ * With USE_RNDIS=1 the device offers two configurations, RNDIS and CDC-ECM,
+ * and the host's OS picks the one it supports. With NCM (the default) there
+ * is a single NCM configuration.
+ *
+ * The vendor ID 0xCafe is TinyUSB's example ID, fine for personal use.
+ */
+
 #include "bsp/board_api.h"
 #include "tusb.h"
 
@@ -37,6 +64,7 @@
                            _PID_MAP(MIDI, 3) | _PID_MAP(VENDOR, 4) | _PID_MAP(ECM_RNDIS, 5) | _PID_MAP(NCM, 5) )
 
 // String Descriptor Index
+// (Position of each string in string_desc_arr below; 0 is the language list.)
 enum
 {
   STRID_LANGID = 0,
@@ -300,6 +328,8 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_requ
 //--------------------------------------------------------------------+
 
 // array of pointer to string descriptors
+// The names shown by the host's OS (for example in System Information on
+// macOS or Device Manager on Windows).
 static char const* string_desc_arr [] =
 {
   [STRID_LANGID]       = (const char[]) { 0x09, 0x04 }, // supported language is English (0x0409)
