@@ -1,0 +1,39 @@
+== BF961 model vs datasheet (VDS=15 V, VG2S=4 V) ==
+IDSS (VG1S=0)          9.68 mA   datasheet 4..20 mA
+y21s at ID=10 mA      15.07 mS   datasheet 15 typ, 12 min
+-VG1S(off) @20 uA      1.24 V    datasheet <= 3.5 V
+-VG2S(off) @20 uA      0.96 V    datasheet <= 3.5 V
+
+== Operating point, LO running (50 % duty) ==
+V(source) avg         0.517 V  -> I avg = 2.35 mA
+V(drain)  avg         6.650 V
+
+== Mixer, LO 7.100 MHz, RF 7.103000 MHz @ 10 mV pk ==
+IF 3 kHz at ADC pin     17.93 mV pk
+conversion gain RF->ADC    5.1 dB
+ADC pin DC / min / max 1.643 / 1.614 / 1.663 V
+LO ripple at ADC pin     1.03 mV pp (approx)
+
+== Conversion gain vs IF frequency (RF->ADC pin) ==
+IF   0.3 kHz      5.8 dB
+IF   1.0 kHz      5.9 dB
+IF   2.0 kHz      5.9 dB
+IF   3.0 kHz      5.0 dB
+IF   5.0 kHz      3.6 dB
+IF   7.0 kHz      2.0 dB
+IF  10.0 kHz     -0.2 dB
+IF  12.5 kHz     -1.8 dB
+IF  15.0 kHz     -3.2 dB
+IF  20.0 kHz     -5.5 dB
+RC corner (R4+R5 || R6||R7, C5): fc = 5.3 kHz
+
+== Large RF input: ADC pin stays inside 0..3.3 V ==
+RF     1.0 mV pk -> IF     2.0 mV pk, ADC min 1.631 V max 1.639 V
+RF    10.0 mV pk -> IF    17.9 mV pk, ADC min 1.615 V max 1.654 V
+RF    30.0 mV pk -> IF    53.9 mV pk, ADC min 1.578 V max 1.690 V
+RF   100.0 mV pk -> IF   180.1 mV pk, ADC min 1.443 V max 1.808 V
+RF   300.0 mV pk -> IF   532.0 mV pk, ADC min 1.021 V max 2.100 V
+RF  1000.0 mV pk -> IF   917.0 mV pk, ADC min 0.545 V max 2.478 V
+
+== Power-up (both rails 0 -> on in 1 ms, caps discharged) ==
+ADC pin max 3.478 V (clamp node before R8: 3.627 V), min 0.000 V, at 400 ms 1.654 V

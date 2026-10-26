@@ -1,0 +1,34 @@
+* BF961 N-channel dual-gate depletion MOSFET (Vishay/Telefunken)
+* Behavioural model derived from the datasheet, NOT a vendor model.
+* Topology: two cascoded depletion NMOS (gate 1 = lower device,
+* gate 2 = upper device), the usual equivalent of a dual-gate MOSFET.
+*
+* Fit targets (datasheet, Tamb = 25 C):
+*   IDSS  = 4..20 mA (fit: ~11 mA, mid of range)  @ VDS=15V VG1S=0 VG2S=4V
+*   |y21s| = 15 mS typ (12 min)                   @ VDS=15V ID=10mA VG2S=4V
+*   -VG1S(off), -VG2S(off) <= 3.5 V               @ ID=20uA
+*     (fit: about 1.3 V and 1.0 V, consistent with Fig. 2-4 curves)
+*   Cissg1 = 3.7 pF, Cissg2 = 1.6 pF, Crss = 25 fF, Coss = 1.6 pF
+*   Integrated gate protection diodes, V(BR)GSS = 8..14 V (fit: 10 V)
+*
+* Pin order: drain gate2 gate1 source  (substrate tied to source)
+.subckt BF961 D G2 G1 S
+M1 X  G1 S S NG1 L=1u W=100u
+M2 D  G2 X S NG2 L=1u W=100u
+* terminal capacitances (level-1 model has none of its own without TOX)
+Cg1 G1 S 3.7p
+Cg2 G2 S 1.6p
+Crs G1 D 25f
+Cos D  S 1.6p
+* back-to-back gate protection diodes
+DG1a G1 P1 DZ
+DG1b S  P1 DZ
+DG2a G2 P2 DZ
+DG2b S  P2 DZ
+* drain-substrate junction
+DDS S D DSUB
+.model NG1 NMOS (LEVEL=1 VTO=-1.3 KP=110u LAMBDA=0.01 GAMMA=0 PHI=0.6)
+.model NG2 NMOS (LEVEL=1 VTO=-1.0 KP=200u LAMBDA=0.02 GAMMA=0 PHI=0.6)
+.model DZ D (IS=1e-14 BV=10 IBV=1m RS=5)
+.model DSUB D (IS=1e-14 BV=25 CJO=0.5p)
+.ends BF961

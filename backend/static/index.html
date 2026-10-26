@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico Spectrum</title>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --border: #2a3039;
+    --text: #e3e7ec;
+    --muted: #8a94a3;
+    --grid: #252b33;
+    --trace: #4fc3f7;
+    --fill: rgba(79, 195, 247, 0.12);
+    --peak: #ffb74d;
+    --ok: #66bb6a;
+    --bad: #ef5350;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 20px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .stat { color: var(--muted); white-space: nowrap; }
+  .stat b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--bad); margin-right: 6px; vertical-align: 0;
+  }
+  .dot.ok { background: var(--ok); }
+  .controls {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+    padding: 8px 16px; border-bottom: 1px solid var(--border);
+  }
+  .controls label { color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  select, input[type=number], input[type=text], button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px 8px; font: inherit;
+  }
+  input[type=number] { width: 70px; }
+  button { cursor: pointer; }
+  button[aria-pressed=true] { background: #2b3644; border-color: var(--trace); }
+  input[type=range] { width: 110px; }
+  .sqw {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .sqw label { color: var(--text); font-weight: 500; }
+  #sqw-input { width: 130px; font-variant-numeric: tabular-nums; }
+  #sqw-input.invalid { border-color: var(--bad); }
+  #sqw-set { border-color: var(--trace); }
+  #sqw-state { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #sqw-state.err { color: var(--bad); }
+  .hint { color: var(--muted); font-size: 12px; }
+  main { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 8px 16px 16px; gap: 8px; }
+  .plot { position: relative; min-height: 0; }
+  #spectrum-wrap { flex: 3; }
+  #waterfall-wrap { flex: 2; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #readout {
+    position: absolute; top: 8px; right: 12px; text-align: right;
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+  #readout .peak { color: var(--peak); }
+  #readout .cursor { color: var(--muted); }
+  #notice {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--text); pointer-events: none; text-align: center; padding: 16px;
+    background: rgba(15, 18, 22, 0.8);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pico Spectrum</h1>
+  <span class="stat"><span id="conn" class="dot"></span><span id="conn-text">connecting</span></span>
+  <span class="stat">Rate <b id="rate">–</b></span>
+  <span class="stat">Input <b id="level">–</b></span>
+  <span class="stat">Lost packets <b id="lost">0</b></span>
+  <span class="stat">Overruns <b id="overruns">0</b></span>
+  <span class="stat">Resolution <b id="rbw">–</b></span>
+</header>
+
+<div class="controls">
+  <label>FFT size <select id="fft-size"></select></label>
+  <label>Averaging <input id="averaging" type="range" min="0" max="0.95" step="0.05"></label>
+  <label>Top <input id="db-max" type="number" value="0" step="10"> dB</label>
+  <label>Bottom <input id="db-min" type="number" value="-120" step="10"> dB</label>
+  <button id="peak-hold" aria-pressed="false">Peak hold</button>
+  <button id="pause" aria-pressed="false">Pause</button>
+</div>
+
+<div class="sqw">
+  <label for="sqw-input">Square wave</label>
+  <input id="sqw-input" type="text" value="7.1 MHz" inputmode="decimal" spellcheck="false"
+         aria-describedby="sqw-hint" autocomplete="off">
+  <button id="sqw-set">Set</button>
+  <button id="sqw-off">Off</button>
+  <span class="stat"><span id="sqw-dot" class="dot"></span><span id="sqw-state">connecting to Pico</span></span>
+  <span class="hint" id="sqw-hint">e.g. 7.1M, 7100k, 3.5 MHz · ↑/↓ steps 1 kHz, Shift 100 kHz</span>
+</div>
+
+<main>
+  <div class="plot" id="spectrum-wrap">
+    <canvas id="spectrum"></canvas>
+    <div id="readout"><div class="peak" id="peak"></div><div class="cursor" id="cursor"></div></div>
+    <div id="notice">Waiting for data…</div>
+  </div>
+  <div class="plot" id="waterfall-wrap">
+    <canvas id="waterfall"></canvas>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const css = getComputedStyle(document.documentElement);
+const color = (name) => css.getPropertyValue(name).trim();
+
+const PAD = { left: 52, right: 12, top: 10, bottom: 26 };
+
+let ws = null;
+let latest = null;        // { rate, db: Float32Array }
+let peakHold = null;
+let paused = false;
+let streaming = false;
+let cursorX = null;
+let dirty = false;
+
+// ---------- WebSocket ----------
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => setConn(true, "connected");
+  ws.onclose = () => {
+    setConn(false, "disconnected, retrying");
+    setTimeout(connect, 1500);
+  };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      onStatus(JSON.parse(ev.data));
+    } else if (!paused) {
+      const f = new Float32Array(ev.data);
+      onSpectrum(f[0], f.subarray(1));
+    }
+  };
+}
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function setConn(ok, text) {
+  $("conn").classList.toggle("ok", ok);
+  $("conn-text").textContent = text;
+}
+
+function fmtFreq(hz) {
+  if (hz == null) return "–";
+  if (hz === 0) return "off";
+  const trim = (v, d) => v.toFixed(d).replace(/\.?0+$/, "");
+  if (hz >= 1e6) return `${trim(hz / 1e6, 6)} MHz`;
+  if (hz >= 1e3) return `${trim(hz / 1e3, 3)} kHz`;
+  return `${trim(hz, 3)} Hz`;
+}
+
+// Parse what the user typed into Hz (null if unreadable). The backend checks again.
+function parseFreq(text) {
+  const t = text.trim().toLowerCase().replace(/\s+/g, "");
+  if (t === "off" || t === "0") return 0;
+  const m = t.match(/^([0-9]*\.?[0-9]+)(m|k)?(hz)?$/);
+  if (!m) return null;
+  return parseFloat(m[1]) * (m[2] === "m" ? 1e6 : m[2] === "k" ? 1e3 : 1);
+}
+
+let sqwEdited = false;     // user is typing, don't overwrite the box
+let sqwError = "";
+let lastGoodHz = 7.1e6;    // last frequency the backend accepted, for the box after Off
+
+function setSquareWave(value) {
+  const hz = typeof value === "number" ? value : parseFreq(value);
+  const box = $("sqw-input");
+  if (hz == null) {
+    box.classList.add("invalid");
+    sqwError = "can't read that, try 7.1M or 7100k";
+    showSqwState(sqwError, "err");
+    return;
+  }
+  box.classList.remove("invalid");
+  sqwEdited = false;
+  sqwError = "";
+  if (hz > 0) box.value = fmtFreq(hz);
+  else box.value = fmtFreq(lastGoodHz);
+  showSqwState(`setting ${fmtFreq(hz)}…`, "");
+  send({ squarewave: hz });
+}
+
+function showSqwState(text, cls, ok) {
+  $("sqw-state").textContent = text;
+  $("sqw-state").className = cls;
+  $("sqw-dot").classList.toggle("ok", !!ok);
+}
+
+function onSquareWaveStatus(q) {
+  if (!q) return;
+  if (q.requested) lastGoodHz = q.requested;
+  if (!sqwEdited && document.activeElement !== $("sqw-input") && q.requested) {
+    $("sqw-input").value = fmtFreq(q.requested);
+  }
+  if (sqwError) return;
+  if (q.state === "ok") {
+    showSqwState(q.actual ? `running at ${fmtFreq(q.actual)}` : "output off", "", true);
+  } else if (q.state === "offline") {
+    showSqwState(q.requested != null ? `Pico not reachable, will set ${fmtFreq(q.requested)} when it is` : "Pico not reachable", "");
+  } else if (q.state === "error") {
+    showSqwState(`Pico refused: ${q.message}`, "err");
+  } else {
+    showSqwState("talking to Pico…", "");
+  }
+}
+
+function onStatus(s) {
+  if (s.type === "freq_error") {
+    sqwError = s.message;
+    $("sqw-input").classList.add("invalid");
+    showSqwState(s.message, "err");
+    return;
+  }
+  onSquareWaveStatus(s.squarewave);
+  if (s.fft_sizes) {
+    const sel = $("fft-size");
+    sel.innerHTML = "";
+    for (const n of s.fft_sizes) sel.add(new Option(n, n));
+  }
+  streaming = s.streaming;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    setConn(s.streaming, s.streaming ? (s.demo ? "demo signal" : "streaming") : "connected, no data from Pico");
+  }
+  $("rate").textContent = s.sample_rate ? `${(s.sample_rate / 1000).toFixed(1)} kS/s` : "–";
+  $("level").textContent = s.min_v != null ? `${s.min_v.toFixed(2)}–${s.max_v.toFixed(2)} V` : "–";
+  $("lost").textContent = s.lost_packets;
+  $("overruns").textContent = s.overruns;
+  if (document.activeElement !== $("fft-size")) $("fft-size").value = s.fft_size;
+  if (document.activeElement !== $("averaging")) $("averaging").value = s.averaging;
+  if (s.sample_rate) $("rbw").textContent = `${(s.sample_rate / s.fft_size).toFixed(2)} Hz/bin`;
+  $("notice").style.display = streaming ? "none" : "flex";
+  $("notice").textContent = streaming ? "" :
+    "Waiting for data from the Pico. Check that it is plugged in and the USB network is up (ping 192.168.7.1).";
+}
+
+function onSpectrum(rate, db) {
+  db = Float32Array.from(db);
+  if (peakHold && peakHold.length === db.length) {
+    for (let i = 0; i < db.length; i++) peakHold[i] = Math.max(peakHold[i], db[i]);
+  } else if (peakHold) {
+    peakHold = Float32Array.from(db);
+  }
+  latest = { rate, db };
+  addWaterfallLine(db);
+  dirty = true;
+}
+
+// ---------- Canvas helpers ----------
+
+function fitCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width * dpr));
+  const h = Math.max(1, Math.round(r.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    return true;
+  }
+  return false;
+}
+
+function dbRange() {
+  let top = parseFloat($("db-max").value);
+  let bottom = parseFloat($("db-min").value);
+  if (!(top > bottom)) { top = 0; bottom = -120; }
+  return [bottom, top];
+}
+
+function niceStep(range, target) {
+  const raw = range / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (raw <= m * mag) return m * mag;
+  return 10 * mag;
+}
+
+function fmtHz(hz) {
+  if (hz === 0) return "0";
+  return hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 ? 2 : 0)} kHz` : `${hz.toFixed(hz < 10 ? 2 : 1)} Hz`;
+}
+
+// ---------- Spectrum plot ----------
+
+function drawSpectrum() {
+  const c = $("spectrum");
+  fitCanvas(c);
+  const dpr = window.devicePixelRatio || 1;
+  const g = c.getContext("2d");
+  const W = c.width / dpr, H = c.height / dpr;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  const x0 = PAD.left, x1 = W - PAD.right, y0 = PAD.top, y1 = H - PAD.bottom;
+  const pw = x1 - x0, ph = y1 - y0;
+  if (pw < 10 || ph < 10) return;
+  const [dbMin, dbMax] = dbRange();
+  const nyq = latest ? latest.rate / 2 : 12500;
+  const yOf = (d) => y0 + (1 - (d - dbMin) / (dbMax - dbMin)) * ph;
+
+  // Grid and labels
+  g.font = "11px system-ui, sans-serif";
+  g.strokeStyle = color("--grid");
+  g.fillStyle = color("--muted");
+  g.lineWidth = 1;
+  g.textAlign = "right";
+  g.textBaseline = "middle";
+  const dStep = niceStep(dbMax - dbMin, Math.max(2, ph / 40));
+  for (let d = Math.ceil(dbMin / dStep) * dStep; d <= dbMax + 1e-9; d += dStep) {
+    const y = Math.round(yOf(d)) + 0.5;
+    g.beginPath(); g.moveTo(x0, y); g.lineTo(x1, y); g.stroke();
+    g.fillText(`${d}`, x0 - 6, y);
+  }
+  g.textAlign = "center";
+  g.textBaseline = "top";
+  const fStep = niceStep(nyq, Math.max(2, pw / 90));
+  for (let f = 0; f <= nyq + 1e-9; f += fStep) {
+    const x = Math.round(x0 + (f / nyq) * pw) + 0.5;
+    g.beginPath(); g.moveTo(x, y0); g.lineTo(x, y1); g.stroke();
+    g.fillText(fmtHz(f), x, y1 + 6);
+  }
+  g.save();
+  g.translate(12, y0 + ph / 2);
+  g.rotate(-Math.PI / 2);
+  g.textBaseline = "middle";
+  g.fillText("dBFS", 0, 0);
+  g.restore();
+
+  if (!latest) return;
+  const db = latest.db;
+  const n = db.length;
+
+  // Draw one point per pixel column, keeping the max of the bins it covers.
+  const cols = Math.max(1, Math.floor(pw));
+  const trace = (data, stroke, fill) => {
+    g.beginPath();
+    for (let px = 0; px <= cols; px++) {
+      const a = Math.floor((px / cols) * (n - 1));
+      const b = Math.max(a + 1, Math.floor(((px + 1) / cols) * (n - 1)));
+      let m = -Infinity;
+      for (let i = a; i < b && i < n; i++) if (data[i] > m) m = data[i];
+      const y = Math.min(y1, Math.max(y0, yOf(m)));
+      const x = x0 + px * (pw / cols);
+      px === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.strokeStyle = stroke;
+    g.lineWidth = 1.25;
+    g.stroke();
+    if (fill) {
+      g.lineTo(x1, y1); g.lineTo(x0, y1); g.closePath();
+      g.fillStyle = fill;
+      g.fill();
+    }
+  };
+  g.save();
+  g.beginPath(); g.rect(x0, y0, pw, ph); g.clip();
+  if (peakHold) trace(peakHold, color("--peak"), null);
+  trace(db, color("--trace"), color("--fill"));
+
+  // Peak marker (skip bin 0, which holds what's left of DC)
+  let pi = 1;
+  for (let i = 2; i < n; i++) if (db[i] > db[pi]) pi = i;
+  const pf = (pi / (n - 1)) * nyq;
+  const px = x0 + (pi / (n - 1)) * pw, py = yOf(db[pi]);
+  g.fillStyle = color("--peak");
+  g.beginPath(); g.moveTo(px, py - 4); g.lineTo(px - 5, py - 12); g.lineTo(px + 5, py - 12); g.closePath(); g.fill();
+
+  // Cursor
+  let cursorText = "";
+  if (cursorX != null && cursorX >= x0 && cursorX <= x1) {
+    const ci = Math.round(((cursorX - x0) / pw) * (n - 1));
+    const cf = (ci / (n - 1)) * nyq;
+    g.strokeStyle = color("--muted");
+    g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(cursorX + 0.5, y0); g.lineTo(cursorX + 0.5, y1); g.stroke();
+    g.setLineDash([]);
+    cursorText = `Cursor ${fmtHz(cf)}  ${db[ci].toFixed(1)} dBFS`;
+  }
+  g.restore();
+
+  $("peak").textContent = `Peak ${fmtHz(pf)}  ${db[pi].toFixed(1)} dBFS`;
+  $("cursor").textContent = cursorText;
+}
+
+// ---------- Waterfall ----------
+
+const wfLines = [];       // newest first, each a Float32Array of dB values
+const WF_MAX = 600;
+
+// Perceptual-ish dark-to-bright colormap
+const STOPS = [
+  [0.00, [5, 7, 20]], [0.25, [30, 30, 110]], [0.50, [20, 130, 170]],
+  [0.70, [120, 200, 90]], [0.85, [250, 210, 60]], [1.00, [255, 255, 240]],
+];
+const LUT = new Uint8ClampedArray(256 * 3);
+for (let i = 0; i < 256; i++) {
+  const t = i / 255;
+  let k = 0;
+  while (k < STOPS.length - 2 && t > STOPS[k + 1][0]) k++;
+  const [ta, ca] = STOPS[k], [tb, cb] = STOPS[k + 1];
+  const u = (t - ta) / (tb - ta);
+  for (let j = 0; j < 3; j++) LUT[i * 3 + j] = ca[j] + (cb[j] - ca[j]) * u;
+}
+
+function addWaterfallLine(db) {
+  wfLines.unshift(db);
+  if (wfLines.length > WF_MAX) wfLines.pop();
+}
+
+function drawWaterfall() {
+  const c = $("waterfall");
+  fitCanvas(c);
+  const g = c.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const x0 = Math.round(PAD.left * dpr), x1 = c.width - Math.round(PAD.right * dpr);
+  const w = Math.max(1, x1 - x0), h = c.height;
+  g.clearRect(0, 0, c.width, c.height);
+  if (!wfLines.length) return;
+
+  const img = g.createImageData(w, Math.min(h, wfLines.length));
+  const [dbMin, dbMax] = dbRange();
+  const scale = 255 / (dbMax - dbMin);
+  for (let row = 0; row < img.height; row++) {
+    const db = wfLines[row];
+    const n = db.length;
+    for (let px = 0; px < w; px++) {
+      const a = Math.floor((px / w) * (n - 1));
+      const b = Math.max(a + 1, Math.floor(((px + 1) / w) * (n - 1)));
+      let m = -Infinity;
+      for (let i = a; i < b && i < n; i++) if (db[i] > m) m = db[i];
+      const v = Math.max(0, Math.min(255, Math.round((m - dbMin) * scale)));
+      const o = (row * w + px) * 4;
+      img.data[o] = LUT[v * 3];
+      img.data[o + 1] = LUT[v * 3 + 1];
+      img.data[o + 2] = LUT[v * 3 + 2];
+      img.data[o + 3] = 255;
+    }
+  }
+  g.putImageData(img, x0, 0);
+}
+
+// ---------- Render loop and controls ----------
+
+function frame() {
+  if (dirty) {
+    drawSpectrum();
+    drawWaterfall();
+    dirty = false;
+  }
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener("resize", () => { dirty = true; });
+$("spectrum").addEventListener("mousemove", (e) => {
+  cursorX = e.clientX - $("spectrum").getBoundingClientRect().left;
+  dirty = true;
+});
+$("spectrum").addEventListener("mouseleave", () => { cursorX = null; dirty = true; });
+$("fft-size").addEventListener("change", (e) => {
+  peakHold = peakHold ? new Float32Array(0) : null;
+  send({ fft_size: +e.target.value });
+});
+$("averaging").addEventListener("input", (e) => send({ averaging: +e.target.value }));
+for (const id of ["db-min", "db-max"]) $(id).addEventListener("input", () => { dirty = true; });
+$("peak-hold").addEventListener("click", (e) => {
+  const on = e.target.getAttribute("aria-pressed") !== "true";
+  e.target.setAttribute("aria-pressed", on);
+  peakHold = on ? (latest ? Float32Array.from(latest.db) : new Float32Array(0)) : null;
+  dirty = true;
+});
+$("pause").addEventListener("click", (e) => {
+  paused = !paused;
+  e.target.setAttribute("aria-pressed", paused);
+  e.target.textContent = paused ? "Resume" : "Pause";
+});
+
+const sqwBox = $("sqw-input");
+sqwBox.addEventListener("input", () => {
+  sqwEdited = true;
+  sqwError = "";
+  sqwBox.classList.toggle("invalid", parseFreq(sqwBox.value) == null && sqwBox.value.trim() !== "");
+});
+let stepTimer = null;
+sqwBox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    setSquareWave(sqwBox.value);
+  } else if (e.key === "Escape") {
+    sqwEdited = false;
+    sqwBox.blur();
+  } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    e.preventDefault();
+    const cur = parseFreq(sqwBox.value);
+    if (cur == null) return;
+    const step = (e.shiftKey ? 100e3 : 1e3) * (e.key === "ArrowUp" ? 1 : -1);
+    const next = Math.max(1e3, Math.round((cur + step) / 1e3) * 1e3);
+    sqwBox.value = fmtFreq(next);
+    sqwEdited = true;
+    // Send once the user pauses, not on every key repeat.
+    clearTimeout(stepTimer);
+    stepTimer = setTimeout(() => setSquareWave(next), 250);
+  }
+});
+$("sqw-set").addEventListener("click", () => setSquareWave(sqwBox.value));
+$("sqw-off").addEventListener("click", () => setSquareWave(0));
+
+drawSpectrum();
+connect();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

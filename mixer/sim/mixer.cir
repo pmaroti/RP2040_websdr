@@ -1,0 +1,32 @@
+* BF961 dual-gate MOSFET mixer, stand-alone interactive run
+*
+*   cd mixer/sim
+*   ngspice mixer.cir        (opens plot windows)
+*   ngspice -b mixer.cir     (batch, prints the measurements only)
+*
+* LO 7.100 MHz square wave on gate 2 (RP2040 GP8), RF 7.103 MHz, 10 mV peak
+* on gate 1, so the wanted IF is 3 kHz at the ADC pin (GP26).
+* run.py does the full set of runs and draws the plots in ../plots/.
+
+.param flo=7.100meg
+.param frf=7.103meg
+.param arf=10m
+
+.include mixer_core.inc
+
+* Start from the averaged operating point with the LO running (found by
+* run.py step 1). Without this the 220 ohm / 47 uF source bypass and the
+* 1 uF ADC coupling cap take tens of ms to settle.
+.ic v(src)=0.517 v(drain)=6.65 v(filt)=6.65 v(adc_b)=1.65 v(adc)=1.65
+
+.control
+save v(adc) v(drain) v(filt) v(src) v(g2)
+tran 4n 3m
+meas tran adc_avg avg v(adc) from=0.5m to=3m
+meas tran adc_pp pp v(adc) from=0.5m to=3m
+meas tran drain_avg avg v(drain) from=0.5m to=3m
+plot v(drain) v(g2) xlimit 1m 1.0003m title 'drain and LO, 2 LO periods'
+plot v(drain) v(filt) title 'drain and RC low-pass output'
+plot v(adc) ylimit 0 3.3 title 'ADC pin GP26'
+.endc
+.end

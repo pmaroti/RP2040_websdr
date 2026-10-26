@@ -1,0 +1,20 @@
+; Square wave generators, based on pmaroti/am_generator.
+;
+; squarewave:      2 PIO cycles per period, f = clk_sys / (2 * div)
+;                  covers about 1 kHz to 62.5 MHz at 125 MHz clk_sys
+; squarewave_slow: 64 PIO cycles per period, f = clk_sys / (64 * div)
+;                  covers about 30 Hz to 1.9 MHz, used below 10 kHz
+
+.program squarewave
+    set pindirs, 1
+.wrap_target
+    set pins, 1
+    set pins, 0
+.wrap
+
+.program squarewave_slow
+    set pindirs, 1
+.wrap_target
+    set pins, 1 [31]
+    set pins, 0 [31]
+.wrap
