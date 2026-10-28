@@ -1,0 +1,51 @@
+== LM358 model vs datasheet (one amplifier, 9 V supply) ==
+DC open-loop gain      99.9 dB    datasheet 100 dB typ
+unity-gain frequency   0.70 MHz   datasheet 0.7 MHz (TI)
+slew rate              0.30 V/us  datasheet 0.3 V/us
+output swing            5 mV .. 7.50 V   datasheet ~5 mV .. Vcc-1.5 V
+
+== Filter response alone (drain -> filter output, incl. bias network) ==
+                       Sallen-Key   simple RC
+gain at 1 kHz             -0.2 dB      -1.9 dB
+-3 dB frequency            5.7 kHz      5.7 kHz (-3 dB from its DC gain)
+at 12.5 kHz (Nyquist)    -14.4 dB      -9.8 dB
+at 25 kHz (= fs)         -27.5 dB     -15.3 dB
+at 7.1 MHz (LO)          -98.6 dB     -64.2 dB
+
+== Operating point, LO running (50 % duty) ==
+V(source) avg         0.516 V  -> I avg = 2.35 mA
+V(drain)  avg         6.651 V
+
+== Mixer, LO 7.100 MHz, RF 7.103000 MHz @ 10 mV pk ==
+IF 3 kHz at ADC pin     24.00 mV pk
+conversion gain RF->ADC    7.6 dB   (simple RC version: 5.1 dB)
+ADC pin DC / min / max 1.641 / 1.605 / 1.667 V
+LO ripple at ADC pin    0.023 mV pp (approx; simple RC: 1.03 mV pp)
+
+== Conversion gain vs IF frequency (RF->ADC pin) ==
+IF   0.3 kHz      7.4 dB
+IF   1.0 kHz      7.6 dB
+IF   2.0 kHz      8.0 dB
+IF   3.0 kHz      7.6 dB
+IF   5.0 kHz      6.1 dB
+IF   7.0 kHz      2.8 dB
+IF  10.0 kHz     -2.5 dB
+IF  12.5 kHz     -6.3 dB
+IF  15.0 kHz     -9.6 dB   -> aliases to 10.0 kHz
+IF  20.0 kHz    -15.1 dB   -> aliases to 5.0 kHz
+IF  30.0 kHz    -23.2 dB   -> aliases to 5.0 kHz
+
+== Large RF input: ADC pin stays inside 0..3.3 V ==
+RF     1.0 mV pk -> IF     2.2 mV pk, ADC min 1.628 V max 1.635 V
+RF    10.0 mV pk -> IF    23.9 mV pk, ADC min 1.606 V max 1.657 V
+RF    30.0 mV pk -> IF    72.1 mV pk, ADC min 1.557 V max 1.704 V
+RF   100.0 mV pk -> IF   240.7 mV pk, ADC min 1.378 V max 1.864 V
+RF   300.0 mV pk -> IF   717.2 mV pk, ADC min 0.813 V max 2.264 V
+RF  1000.0 mV pk -> IF  1407.9 mV pk, ADC min 0.004 V max 2.896 V
+
+== Power-up (both rails 0 -> on in 1 ms, caps discharged) ==
+LM358 output max 6.107 V, ADC pin max 3.561 V, min 0.004 V, at 400 ms 1.651 V
+
+== 5 V supply (mixer + LM358 on 5 V, R3 = 470 ohm) ==
+V(source) 0.669 V (I = 1.42 mA), V(drain) 3.576 V
+conversion gain RF->ADC at 3 kHz    6.0 dB   (9 V: 7.6 dB)

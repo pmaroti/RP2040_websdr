@@ -1,0 +1,38 @@
+* =============================================================================
+* BF961 mixer + LM358 Sallen-Key low-pass - stand-alone ngspice deck
+* =============================================================================
+* Run:   cd mixer_sallenkey/sim && ngspice mixer_sk.cir
+* (interactive: opens plot windows; "ngspice -b mixer_sk.cir" prints only
+*  the measurements). run.py does the full set of simulations and plots.
+*
+* Test case: LO 7.100 MHz on GP8, RF tone 7.103 MHz at 10 mV peak,
+* so the wanted IF is 7.103 - 7.100 MHz = 3 kHz.
+* =============================================================================
+
+.param flo=7.100meg        ; LO frequency, Hz (what the firmware sets on GP8)
+.param frf=7.103meg        ; RF test tone, Hz (so IF = frf - flo = 3 kHz)
+.param arf=10m             ; RF amplitude, V peak
+
+.include mixer_sk_core.inc
+
+* Start from the settled operating point (found by run.py with the LO
+* running: source 0.52 V, drain 6.65 V; filter and ADC at 1.65 V).
+* xu1a.int is the LM358 model's internal node that its output follows; it
+* has to start at 1.65 V too, or the output would begin at 0 V. Without
+* this the 47 uF source capacitor would need ~50 ms of simulated time to
+* charge, which at 7 MHz would take very long to simulate.
+.ic v(src)=0.517 v(drain)=6.65 v(sk_in)=1.65 v(sk_mid)=1.65 v(sk_p)=1.65
++ v(sk_out)=1.65 v(adc)=1.65 v(xu1a.int)=1.65
+
+.control
+save v(adc) v(drain) v(sk_in) v(sk_out) v(src) v(g2)
+* 4 ns maximum step (~35 points per LO period), 3 ms = 9 IF periods
+tran 4n 3m
+meas tran adc_avg avg v(adc) from=0.5m to=3m
+meas tran adc_pp pp v(adc) from=0.5m to=3m
+meas tran drain_avg avg v(drain) from=0.5m to=3m
+plot v(drain) v(g2) xlimit 1m 1.0003m title 'drain and LO, 2 LO periods'
+plot v(sk_in) v(sk_out) title 'Sallen-Key filter input and output'
+plot v(adc) ylimit 0 3.3 title 'ADC pin GP26'
+.endc
+.end
