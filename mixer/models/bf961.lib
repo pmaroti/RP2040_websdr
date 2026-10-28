@@ -1,34 +1,130 @@
-* BF961 N-channel dual-gate depletion MOSFET (Vishay/Telefunken)
-* Behavioural model derived from the datasheet, NOT a vendor model.
-* Topology: two cascoded depletion NMOS (gate 1 = lower device,
-* gate 2 = upper device), the usual equivalent of a dual-gate MOSFET.
+* =============================================================================
+* BF961  N-channel dual-gate depletion MOSFET  (Vishay / Telefunken)
+* =============================================================================
 *
-* Fit targets (datasheet, Tamb = 25 C):
-*   IDSS  = 4..20 mA (fit: ~11 mA, mid of range)  @ VDS=15V VG1S=0 VG2S=4V
-*   |y21s| = 15 mS typ (12 min)                   @ VDS=15V ID=10mA VG2S=4V
-*   -VG1S(off), -VG2S(off) <= 3.5 V               @ ID=20uA
-*     (fit: about 1.3 V and 1.0 V, consistent with Fig. 2-4 curves)
+* WHAT THIS FILE IS
+*   An ngspice subcircuit that behaves like a BF961 for this mixer project.
+*   It is a behavioural model DERIVED FROM THE DATASHEET, not a vendor model:
+*   no manufacturer SPICE model for the BF961 could be found. It is good for
+*   DC bias, switching by gate 2 and the low-frequency (kHz) IF behaviour.
+*   It is NOT meant for accurate noise, VHF gain or S-parameter work.
+*
+* HOW A DUAL-GATE MOSFET IS MODELLED
+*   A dual-gate MOSFET is physically one channel with two gates in series
+*   along it. Electrically it acts like two ordinary MOSFETs stacked on top of
+*   each other (a "cascode"):
+*
+*            D (drain)
+*            |
+*       G2 --| M2   upper device, controlled by gate 2
+*            |
+*            X      internal node between the two gates (not a real pin)
+*            |
+*       G1 --| M1   lower device, controlled by gate 1
+*            |
+*            S (source, also the substrate/bulk)
+*
+*   Gate 1 normally carries the signal (here: the RF), gate 2 sets the gain
+*   (AGC in a normal amplifier; here: the LO, which switches the gain on and
+*   off, and that is what makes the circuit a mixer).
+*   Both devices are DEPLETION mode: they conduct with 0 V gate-source voltage
+*   and need a NEGATIVE gate voltage to turn off (VTO < 0).
+*
+* DATASHEET VALUES USED FOR THE FIT  (Tamb = 25 C)
+*   IDSS   = 4 ... 20 mA            @ VDS=15 V, VG1S=0, VG2S=4 V
+*            -> model gives 9.7 mA (middle of the range)
+*   |y21s| = 15 mS typ, 12 mS min   @ VDS=15 V, ID=10 mA, VG2S=4 V, f=1 MHz
+*            -> model gives 15.1 mS  (y21s = forward transadmittance = gm)
+*   -VG1S(off) <= 3.5 V             @ VDS=15 V, VG2S=4 V, ID=20 uA
+*            -> model gives 1.24 V
+*   -VG2S(off) <= 3.5 V             @ VDS=15 V, VG1S=0, ID=20 uA
+*            -> model gives 0.96 V
+*   (the datasheet only gives a maximum for the cut-off voltages; the chosen
+*    values agree with the shape of datasheet Figs. 2 to 4, where the drain
+*    current is already near zero at VG1S = -1.2 V)
 *   Cissg1 = 3.7 pF, Cissg2 = 1.6 pF, Crss = 25 fF, Coss = 1.6 pF
-*   Integrated gate protection diodes, V(BR)GSS = 8..14 V (fit: 10 V)
+*   Integrated gate protection diodes, V(BR)G1SS = V(BR)G2SS = 8 ... 14 V
+*   Absolute max: VDS 20 V, ID 30 mA, Ptot 200 mW
 *
-* Pin order: drain gate2 gate1 source  (substrate tied to source)
+* HOW THE FIT WAS DONE
+*   Level-1 (square-law) MOSFET: in saturation ID = (KP/2)(W/L)(VGS-VTO)^2,
+*   so gm = 2*ID/(VGS-VTO).
+*   - M1 sets IDSS and gm. With gm = 15 mS at ID = 10 mA, VGS-VTO = 1.33 V,
+*     so VTO1 = -1.3 V; KP1 then follows from IDSS ~ 10 mA at VG1S = 0.
+*   - M2 must be "stronger" than M1 (larger KP) so that with VG2S = 4 V it
+*     never limits the current, and its VTO2 = -1.0 V sets the gate-2 cut-off.
+*   - The values were then checked with a DC sweep (run.py "model check"),
+*     which prints the table in plots/results.txt and plots/bf961_model.png.
+*
+* KNOWN LIMITS
+*   - Square law: gm keeps growing with VG1S instead of flattening out as in
+*     datasheet Fig. 4.
+*   - Capacitances are fixed values; in the real part they vary with bias.
+*   - No noise sources, no temperature dependence.
+*   - Real parts spread over IDSS = 4 ... 20 mA; this models one typical part.
+*
+* PIN ORDER (use this order in the X line of the netlist)
+*   D   drain
+*   G2  gate 2
+*   G1  gate 1
+*   S   source (the substrate/bulk is tied to the source inside the part)
+* =============================================================================
 .subckt BF961 D G2 G1 S
+
+* ----- the two stacked transistors -------------------------------------------
+* Syntax: Mname drain gate source bulk model L=length W=width
+* M1 = lower device: drain on the internal node X, gate = G1, source = S.
 M1 X  G1 S S NG1 L=1u W=100u
+* M2 = upper device: drain = D, gate = G2, source on the internal node X.
+*      Its bulk is tied to S (as in the real part, the whole channel sits in
+*      one substrate); GAMMA=0 below means the body effect is ignored anyway.
 M2 D  G2 X S NG2 L=1u W=100u
-* terminal capacitances (level-1 model has none of its own without TOX)
-Cg1 G1 S 3.7p
-Cg2 G2 S 1.6p
-Crs G1 D 25f
-Cos D  S 1.6p
-* back-to-back gate protection diodes
+
+* ----- terminal capacitances from the datasheet ------------------------------
+* A level-1 model without TOX has no internal capacitances, so the datasheet
+* values are added as plain capacitors between the pins.
+Cg1 G1 S 3.7p      ; Cissg1: gate 1 input capacitance
+Cg2 G2 S 1.6p      ; Cissg2: gate 2 input capacitance
+Crs G1 D 25f       ; Crss: feedback capacitance gate 1 -> drain
+Cos D  S 1.6p      ; Coss: output capacitance
+
+* ----- gate protection diodes ------------------------------------------------
+* The BF961 has two zener diodes back to back between each gate and the
+* source. Below about +/-10 V they do nothing (only tiny leakage); above that
+* they conduct and protect the thin gate oxide. Modelled as two diodes in
+* series, cathode to cathode, through a private middle node (P1, P2):
+*   G1 -->|-- P1 --|<-- S   (DG1a anode on G1, DG1b anode on S)
+* Syntax: Dname anode cathode model   (here P1/P2 are the common cathodes)
+* Whichever polarity the gate goes, one diode is forward biased and the other
+* one breaks down at BV, so the gate is clamped at about +/-(BV + 0.7 V).
 DG1a G1 P1 DZ
 DG1b S  P1 DZ
 DG2a G2 P2 DZ
 DG2b S  P2 DZ
-* drain-substrate junction
+
+* ----- drain-substrate junction ----------------------------------------------
+* The parasitic diode between substrate (= source, anode) and drain
+* (cathode). Normally reverse biased because the drain is positive; it would
+* only conduct if the drain went below the source. BV=25 V puts its breakdown
+* above the 20 V VDS rating.
 DDS S D DSUB
+
+* ----- model cards -----------------------------------------------------------
+* NG1: lower device (gate 1).
+*   LEVEL=1   Shichman-Hodges square-law model (simple, robust)
+*   VTO=-1.3  threshold voltage in V; negative = depletion mode
+*   KP=110u   transconductance parameter in A/V^2 (with W/L=100 -> 11 mA/V^2)
+*   LAMBDA    channel-length modulation, gives a little output conductance
+*             (the slight upward slope of the ID-VDS curves)
+*   GAMMA=0   no body effect; PHI is then unused but kept for completeness
 .model NG1 NMOS (LEVEL=1 VTO=-1.3 KP=110u LAMBDA=0.01 GAMMA=0 PHI=0.6)
+* NG2: upper device (gate 2). Larger KP (20 mA/V^2) so that it does not limit
+* the current when gate 2 is high; VTO=-1.0 V sets the gate-2 cut-off.
 .model NG2 NMOS (LEVEL=1 VTO=-1.0 KP=200u LAMBDA=0.02 GAMMA=0 PHI=0.6)
+* DZ: protection zener. BV=10 V reverse breakdown (datasheet 8 ... 14 V),
+* IBV = current at which BV is defined, RS = series resistance.
 .model DZ D (IS=1e-14 BV=10 IBV=1m RS=5)
+* DSUB: drain-substrate junction, 0.5 pF junction capacitance at 0 V.
 .model DSUB D (IS=1e-14 BV=25 CJO=0.5p)
+
 .ends BF961

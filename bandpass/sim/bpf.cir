@@ -1,0 +1,44 @@
+* 40 m and 20 m bandpass filters, stand-alone interactive run
+* (the first line of a SPICE deck is always the title)
+*
+* HOW TO RUN
+*   cd bandpass/sim
+*   ngspice bpf.cir        (interactive: prints results, opens plot windows)
+*   ngspice -b bpf.cir     (batch: prints the measurements only)
+* run.py does the full set (coil Q, tolerance check) and draws ../plots/.
+*
+* Each filter sits between a 50 ohm generator and a 50 ohm load. The
+* generators are 2 V, so with a perfect match the load gets 1 V and the
+* output voltage in dB is directly the insertion gain S21.
+
+.include bpf_40m.inc
+.include bpf_20m.inc
+
+* ---- 40 m filter test set ----
+V40  s40 0 AC 2            ; 2 V AC generator
+RS40 s40 in40 50           ; 50 ohm source resistance
+X40  in40 out40 BPF40M     ; the filter (coil QU = 150 by default)
+RL40 out40 0 50            ; 50 ohm load
+
+* ---- 20 m filter test set ----
+V20  s20 0 AC 2
+RS20 s20 in20 50
+X20  in20 out20 BPF20M
+RL20 out20 0 50
+
+.control
+* AC sweep, 2000 points per decade from 2 to 50 MHz
+ac dec 2000 2meg 50meg
+* insertion loss in the middle and at the edges of each band
+meas ac il40_mid find vdb(out40) at=7.1meg
+meas ac il40_lo  find vdb(out40) at=7.0meg
+meas ac il40_hi  find vdb(out40) at=7.2meg
+meas ac il20_mid find vdb(out20) at=14.175meg
+meas ac il20_lo  find vdb(out20) at=14.0meg
+meas ac il20_hi  find vdb(out20) at=14.35meg
+* rejection of the 3rd LO harmonic response (square-wave LO)
+meas ac rej40_3f find vdb(out40) at=21.3meg
+meas ac rej20_3f find vdb(out20) at=42.525meg
+plot vdb(out40) vdb(out20) ylimit -70 0 xlog title 'S21 of the 40 m and 20 m filters (dB)'
+.endc
+.end

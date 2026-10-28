@@ -127,6 +127,19 @@ What this means in practice:
   Very low LO frequencies (tens of kHz) would put the LO itself close to the
   IF band, where the single RC pole doesn't remove it.
 
+## Optional front end
+
+Two optional stages can go in front of the mixer's RF input:
+
+* `../bandpass/`: fixed 50 Ω bandpass filters for 40 m and 20 m. They keep
+  out-of-band signals and the 3 × f_LO response of the square-wave LO away
+  from the mixer.
+* `../rf_preamp/`: a second BF961 as an RF preamp with about 20 dB of gain,
+  set by a potentiometer.
+
+`../rf_preamp/chain.png` shows how they connect. If you use a filter without
+the preamp, put 51 Ω from RF in to GND so that the filter sees its 50 Ω load.
+
 ## Running the simulation
 
 Needs ngspice (macOS: `brew install ngspice`) and, for the plots, Python 3 with

@@ -1,30 +1,56 @@
 * BF961 dual-gate MOSFET mixer, stand-alone interactive run
+* (In a SPICE deck the FIRST line is always the title and is never parsed as
+*  circuit, so keep a title line at the top.)
 *
+* HOW TO RUN
 *   cd mixer/sim
-*   ngspice mixer.cir        (opens plot windows)
-*   ngspice -b mixer.cir     (batch, prints the measurements only)
+*   ngspice mixer.cir        (interactive: runs, prints results, opens plots)
+*   ngspice -b mixer.cir     (batch: prints the measurements only, no plots)
 *
-* LO 7.100 MHz square wave on gate 2 (RP2040 GP8), RF 7.103 MHz, 10 mV peak
-* on gate 1, so the wanted IF is 3 kHz at the ADC pin (GP26).
-* run.py does the full set of runs and draws the plots in ../plots/.
+* WHAT IT SIMULATES
+*   LO 7.100 MHz square wave on gate 2 (RP2040 GP8), RF 7.103 MHz, 10 mV peak
+*   on gate 1. The mixer output contains |7.103 - 7.100| MHz = 3 kHz: that is
+*   the IF which should appear at the ADC pin (GP26) on top of 1.65 V DC.
+*   run.py does the full set of runs (IF sweep, overload, power-up) and draws
+*   the plots in ../plots/; this deck is the quick single run.
 
-.param flo=7.100meg
-.param frf=7.103meg
-.param arf=10m
+* ---- parameters used by mixer_core.inc (must come before the .include) ----
+.param flo=7.100meg        ; LO frequency, Hz (what the firmware sets on GP8)
+.param frf=7.103meg        ; RF test tone, Hz (so IF = frf - flo = 3 kHz)
+.param arf=10m             ; RF amplitude, V peak
 
+* ---- the circuit itself ----
 .include mixer_core.inc
 
+* ---- initial conditions ----
 * Start from the averaged operating point with the LO running (found by
-* run.py step 1). Without this the 220 ohm / 47 uF source bypass and the
-* 1 uF ADC coupling cap take tens of ms to settle.
+* run.py step 1). Without this the 220 ohm / 47 uF source bypass
+* (time constant ~10 ms) and the 1 uF ADC coupling cap (~50 ms) would need
+* tens of ms of simulated time to settle, which at 4 ns steps is very slow.
+*   src    0.517 V   average source voltage (self bias)
+*   drain  6.65 V    average drain voltage; filt starts at the same DC level
+*   adc_b, adc  1.65 V  the mid-scale bias set by R6/R7
 .ic v(src)=0.517 v(drain)=6.65 v(filt)=6.65 v(adc_b)=1.65 v(adc)=1.65
 
+* ---- analysis and output (ngspice control language) ----
 .control
+* Keep only these node voltages in memory; saving every node of a
+* million-point transient would use a lot of RAM.
 save v(adc) v(drain) v(filt) v(src) v(g2)
+* Transient analysis: 4 ns maximum step (about 35 points per LO period at
+* 7.1 MHz), 3 ms long (9 cycles of the 3 kHz IF).
 tran 4n 3m
+* Measurements over 0.5 ... 3 ms (skipping the first start-up wiggle):
+*   adc_avg    DC level at the ADC pin, should be ~1.65 V
+*   adc_pp     peak-to-peak IF at the ADC pin (2 x the IF amplitude)
+*   drain_avg  average drain voltage, should be ~6.65 V
 meas tran adc_avg avg v(adc) from=0.5m to=3m
 meas tran adc_pp pp v(adc) from=0.5m to=3m
 meas tran drain_avg avg v(drain) from=0.5m to=3m
+* Plot windows (ignored in batch mode):
+*   1) drain and gate 2 over two LO periods: the drain is chopped by the LO
+*   2) drain and RC filter output: the filter removes the LO, leaving the IF
+*   3) the ADC pin on the full 0 ... 3.3 V ADC range
 plot v(drain) v(g2) xlimit 1m 1.0003m title 'drain and LO, 2 LO periods'
 plot v(drain) v(filt) title 'drain and RC low-pass output'
 plot v(adc) ylimit 0 3.3 title 'ADC pin GP26'

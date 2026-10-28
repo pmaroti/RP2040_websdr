@@ -1,0 +1,36 @@
+* BF961 RF preamp, stand-alone interactive run
+* (the first line of a SPICE deck is always the title)
+*
+* HOW TO RUN
+*   cd rf_preamp/sim
+*   ngspice preamp.cir        (interactive: prints results, opens a plot)
+*   ngspice -b preamp.cir     (batch: prints the measurements only)
+* run.py does the full set (pot sweep, compression, whole chain into the
+* mixer) and draws ../plots/.
+
+* BF961 model from the mixer folder, then the preamp subcircuit
+.include ../../mixer/models/bf961.lib
+.include preamp.inc
+
+* potentiometer position: 0 = minimum gain ... 1 = maximum gain
+.param pot=1
+
+V9  vdd 0 9                ; +9 V supply
+VS  src 0 AC 2             ; 2 V generator: a matched 50 ohm input gets 1 V
+RS  src in 50              ; 50 ohm source (antenna or bandpass filter)
+X1  in out vdd PREAMP pos={pot} rpot=50k rtop=15k
+RL  out 0 100k             ; the mixer's RF input: 100 kohm ...
+CL  out 0 6p               ; ... in parallel with about 6 pF
+
+.control
+* DC operating point: gate 2, source and drain voltages
+op
+print v(x1.g2) v(x1.s) v(x1.d)
+* AC sweep 1 ... 60 MHz; gain = V(out) / V(in)
+ac dec 100 1meg 60meg
+let gain = vdb(out) - vdb(in)
+meas ac g40 find gain at=7.1meg
+meas ac g20 find gain at=14.175meg
+plot gain ylimit -10 25 xlog title 'preamp gain (dB), pot at max'
+.endc
+.end

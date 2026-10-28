@@ -1,0 +1,19 @@
+== Nominal response, 50 ohm source and load, coil QU = 150 ==
+40m: peak -0.89 dB at 7.115 MHz, -3 dB 6.772 ... 7.442 MHz (BW 671 kHz)
+      band edges 7.000 / 7.200 MHz: -0.97 / -0.99 dB;  S11 in band <= -19.3 dB
+      at the other band (14.18 MHz)  -31.2 dB,  at 3 x f0 (21.3 MHz, LO 3rd harmonic)  -31.5 dB
+20m: peak -1.08 dB at 14.184 MHz, -3 dB 13.624 ... 14.733 MHz (BW 1110 kHz)
+      band edges 14.000 / 14.350 MHz: -1.19 / -1.21 dB;  S11 in band <= -18.7 dB
+      at the other band (7.10 MHz)  -69.7 dB,  at 3 x f0 (42.5 MHz, LO 3rd harmonic)  -34.3 dB
+
+== Effect of coil quality factor QU ==
+40m QU= 75: loss at f0 -1.77 dB, worst in band -1.91 dB
+40m QU=150: loss at f0 -0.89 dB, worst in band -0.99 dB
+40m QU=300: loss at f0 -0.45 dB, worst in band -0.53 dB
+20m QU= 75: loss at f0 -2.15 dB, worst in band -2.33 dB
+20m QU=150: loss at f0 -1.08 dB, worst in band -1.21 dB
+20m QU=300: loss at f0 -0.54 dB, worst in band -0.64 dB
+
+== Tolerance check: 100 random builds, all L and C within +/-5 % ==
+40m: peak frequency 6.894 ... 7.354 MHz; worst band-edge loss  -4.1 dB, 88 % of builds lose < 3 dB at both band edges
+20m: peak frequency 13.749 ... 14.785 MHz; worst band-edge loss  -5.3 dB, 76 % of builds lose < 3 dB at both band edges

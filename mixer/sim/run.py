@@ -4,25 +4,44 @@
 Usage (from anywhere):   python3 mixer/sim/run.py
 Needs: ngspice on PATH, numpy, matplotlib.
 Raw ngspice output goes to sim/out/, plots to plots/, numbers to plots/results.txt.
+
+What it does, step by step:
+  model check  DC sweeps of the BF961 model, compared with the datasheet
+  step 1       find the average operating point with the LO running
+  step 2       one full mixer run (LO 7.1 MHz, RF 7.103 MHz -> 3 kHz IF),
+               waveforms and spectra, including what the 25 kS/s ADC sees
+  step 3       conversion gain versus IF frequency (shows the RC low-pass)
+  step 4       large RF input: compression, and the ADC pin stays in 0..3.3 V
+  step 5       power-up from 0 V: the clamp protects the ADC pin
+
+How it talks to ngspice: for every run it writes a small top-level deck
+(parameters + ".include mixer_core.inc" + a .control block), runs
+"ngspice -b" on it, reads the ".meas" results from ngspice's printed output,
+and reads the waveforms from the text files that "wrdata" writes into sim/out/.
 """
 import os
 import subprocess
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")   # draw into files only, no window (works without a display)
 import matplotlib.pyplot as plt
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "out")
-PLOTS = os.path.join(HERE, "..", "plots")
+# ----------------------------------------------------------------- folders
+HERE = os.path.dirname(os.path.abspath(__file__))   # mixer/sim/, where the netlists are
+OUT = os.path.join(HERE, "out")                     # raw ngspice waveform files
+PLOTS = os.path.join(HERE, "..", "plots")           # finished plots + results.txt
 os.makedirs(OUT, exist_ok=True)
 os.makedirs(PLOTS, exist_ok=True)
 
-FLO = 7.100e6          # LO on GP8
-ADC_FS = 25e3          # RP2040 ADC sample rate in the firmware
-ARF = 10e-3            # RF test tone, V peak at the antenna
+# ----------------------------------------------------------------- test conditions
+FLO = 7.100e6          # LO frequency on GP8 (40 m band), Hz
+ADC_FS = 25e3          # RP2040 ADC sample rate used by the firmware, samples/s
+ARF = 10e-3            # RF test tone amplitude, V peak at the antenna
 
-# chart styling (reference palette, light mode)
+# ----------------------------------------------------------------- chart styling
+# Colours from a colour-blind-checked reference palette (light mode):
+# C1 blue = main series, C2 orange = second series, C3 aqua = third series;
+# INK/INK2 = text colours, GRID = grid lines, SURF = background.
 C1, C2, C3 = "#2a78d6", "#eb6834", "#1baf7a"
 INK, INK2, GRID, SURF = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 plt.rcParams.update({
@@ -34,24 +53,38 @@ plt.rcParams.update({
     "legend.frameon": False,
 })
 
+# Every result line is printed and also collected here; at the end the list
+# is written to plots/results.txt.
 results = []
 
 
 def log(line):
+    """Print a result line and remember it for results.txt."""
     print(line)
     results.append(line)
 
 
 def ngspice(name, deck):
-    """Write deck to sim/<name>.cir (next to mixer_core.inc) and run it in batch mode."""
+    """Write deck to sim/<name>.cir (next to mixer_core.inc) and run it in batch mode.
+
+    The deck is written into sim/ (not a temp folder) so that the relative
+    ".include mixer_core.inc" and "../models/bf961.lib" paths resolve.
+    Returns a dict {measurement name: value} parsed from the ".meas" lines,
+    which ngspice prints as "name = value ...".
+    Raises RuntimeError if ngspice fails or prints an error.
+    """
     path = os.path.join(HERE, f"_{name}.cir")
     with open(path, "w") as f:
         f.write(deck)
+    # cwd=HERE so that "wrdata out/..." in the deck lands in sim/out/
     r = subprocess.run(["ngspice", "-b", path], cwd=HERE, capture_output=True, text=True)
     os.remove(path)
+    # "rror" matches both "Error" and "error"
     if r.returncode != 0 or "rror" in r.stdout:
         bad = [l for l in (r.stdout + r.stderr).splitlines() if "rror" in l]
         raise RuntimeError(f"ngspice {name} failed:\n" + "\n".join(bad[:20]))
+    # Pick out lines like "vd_avg  =  6.65e+00 from= ..." : a single word
+    # before the first "=", and a number right after it.
     meas = {}
     for line in r.stdout.splitlines():
         parts = line.split("=")
@@ -64,21 +97,40 @@ def ngspice(name, deck):
 
 
 def load(fname, ncols):
-    """wrdata writes (x, y) pairs per vector; return x and the y columns."""
+    """wrdata writes (x, y) pairs per vector; return x and the y columns.
+
+    For "wrdata file a b c" ngspice writes the columns
+    x a x b x c, so the y values are in the odd columns 1, 3, 5, ...
+    """
     d = np.loadtxt(os.path.join(OUT, fname))
     return d[:, 0], [d[:, 2 * i + 1] for i in range(ncols)]
 
 
 def tone(t, y, f):
-    """Amplitude of the f component over a whole number of periods (lock-in)."""
+    """Amplitude of the f component over a whole number of periods (lock-in).
+
+    ngspice uses a variable time step, so the samples are first resampled on
+    an even time grid. The signal is then multiplied by exp(-j*2*pi*f*t) and
+    averaged over an integer number of periods of f: everything that is not
+    at frequency f averages out, and 2*|mean| is the peak amplitude at f.
+    This is a single-bin Fourier transform, like a lock-in amplifier.
+    """
     tu = np.linspace(t[0], t[-1], 200000)
     yu = np.interp(tu, t, y)
-    n = int((tu[-1] - tu[0]) * f)
+    n = int((tu[-1] - tu[0]) * f)                       # whole periods available
     tu, yu = tu[tu <= tu[0] + n / f], yu[tu <= tu[0] + n / f]
     return 2 * abs(np.mean(yu * np.exp(-2j * np.pi * f * tu)))
 
 
 # ------------------------------------------------------------------ model check
+# Test bench for the BF961 model alone, at the datasheet's test conditions:
+# VDS = 15 V, VG2S = 4 V, source grounded. Three DC sweeps:
+#   1) VG1S from -2 V to +0.6 V  -> ID and gm = dID/dVG1S; measure IDSS
+#      (ID at VG1S = 0), the gate-1 cut-off (ID = 20 uA) and gm at 10 mA
+#   2) VG2S from -3 V to +6 V with VG1S = 0 -> the gate-2 cut-off
+#   3) VDS from 0 to 20 V for VG1S = -0.8 ... +0.6 V -> output curves
+# "i(vd)" is the current INTO the + terminal of VD, so the drain current is
+# -i(vd).
 deck = """* BF961 model check
 .include ../models/bf961.lib
 VD d 0 15
@@ -111,12 +163,15 @@ log(f"y21s at ID=10 mA     {m['gm10']*1e3:6.2f} mS   datasheet 15 typ, 12 min")
 log(f"-VG1S(off) @20 uA    {-m['vg1off']:6.2f} V    datasheet <= 3.5 V")
 log(f"-VG2S(off) @20 uA    {-m['vg2off']:6.2f} V    datasheet <= 3.5 V")
 
+# Plot: left = output curves (compare with datasheet Fig. 2),
+#       right = ID and gm versus VG1S (compare with datasheet Fig. 4).
 fig, ax = plt.subplots(1, 2, figsize=(10, 3.8))
 d = np.loadtxt(os.path.join(OUT, "bf961_id_vds.txt"))
 # dc sweep with a second source: the curves are concatenated, split on VDS reset
+# (wherever VDS jumps back from 20 V to 0 V a new VG1S curve starts)
 splits = np.where(np.diff(d[:, 0]) < 0)[0] + 1
 for k, seg in enumerate(np.split(d, splits)):
-    vg1 = -0.8 + 0.2 * k
+    vg1 = -0.8 + 0.2 * k                        # VG1S value of this curve
     ax[0].plot(seg[:, 0], seg[:, 1] * 1e3, color=C1, lw=1.4)
     ax[0].annotate(f"{vg1:+.1f} V", (20, seg[-1, 1] * 1e3), xytext=(3, 0),
                    textcoords="offset points", va="center", fontsize=8, color=INK2)
@@ -133,6 +188,20 @@ plt.close(fig)
 
 # ----------------------------------------------------- shared deck pieces
 def mixer_deck(name, flo, fif, arf, tstop, vs0, vd0, extra_save="", tstep="4n", ic=True):
+    """Build a top-level deck for one transient run of the mixer.
+
+    name        used for the deck file and for out/<name>.txt
+    flo         LO frequency, Hz
+    fif         wanted IF, Hz; the RF tone is put at flo + fif
+    arf         RF amplitude, V peak
+    tstop       simulated time, s
+    vs0, vd0    starting source and drain voltages for .ic (from step 1)
+    extra_save  more vectors to keep in memory (optional)
+    tstep       maximum time step; 4 ns gives ~35 points per 7.1 MHz period
+    ic          True: start from .ic values; False: start from 0 V ("uic")
+
+    The .meas lines average over the last 40 % of the run, after the start-up.
+    """
     ic_line = (f".ic v(src)={vs0} v(drain)={vd0} v(filt)={vd0} v(adc_b)=1.65 v(adc)=1.65"
                if ic else "")
     return f"""* {name}
@@ -157,6 +226,7 @@ wrdata out/{name}.txt v(adc) v(drain) v(filt)
 # The 220 ohm x 47 uF source bypass needs ~50 ms to settle. Average voltages
 # depend on LO duty cycle, not its frequency, so settle with a 100 kHz LO
 # (cheap), then start every 7.1 MHz run from that point via .ic.
+# (60 ms at 100 ns steps = 0.6 M points; at 7.1 MHz it would need 15 M.)
 op = ngspice("op", mixer_deck("op", 100e3, 0, 0, 60e-3, 0.5, 6.5, tstep="100n"))
 VS0, VD0 = op["vs_avg"], op["vd_avg"]
 log("\n== Operating point, LO running (50 % duty) ==")
@@ -164,19 +234,28 @@ log(f"V(source) avg        {VS0:6.3f} V  -> I avg = {VS0/220*1e3:.2f} mA")
 log(f"V(drain)  avg        {VD0:6.3f} V")
 
 # ------------------------------------------- step 2: the reference mixer run
+# LO 7.1 MHz, RF 7.103 MHz at 10 mV peak -> 3 kHz IF; 10.5 ms of simulated
+# time so the 25 kS/s spectrum below has enough samples (250) to resolve it.
 FIF = 3e3
 r = ngspice("main", mixer_deck("main", FLO, FIF, ARF, 10.5e-3, VS0, VD0))
 t, (adc, drn, filt) = load("main.txt", 3)
-sel = t > 0.5e-3
-a_if = tone(t[sel], adc[sel], FIF)
-gain_db = 20 * np.log10(a_if / ARF)
+sel = t > 0.5e-3                       # ignore the first 0.5 ms (start-up)
+a_if = tone(t[sel], adc[sel], FIF)     # IF amplitude at the ADC pin, V peak
+gain_db = 20 * np.log10(a_if / ARF)    # conversion gain, RF in -> ADC pin
 log(f"\n== Mixer, LO {FLO/1e6:.3f} MHz, RF {(FLO+FIF)/1e6:.6f} MHz @ {ARF*1e3:.0f} mV pk ==")
 log(f"IF {FIF/1e3:.0f} kHz at ADC pin    {a_if*1e3:6.2f} mV pk")
 log(f"conversion gain RF->ADC {gain_db:6.1f} dB")
 log(f"ADC pin DC / min / max {r['adc_avg']:.3f} / {r['adc_min']:.3f} / {r['adc_max']:.3f} V")
+# LO ripple estimate: subtract a 51-point moving average (which keeps the slow
+# IF) and take the RMS of what is left; x 2.83 (= 2*sqrt(2)) converts RMS to
+# peak-to-peak for a sine-like ripple. The ends are dropped (filter edge).
 ripple = adc[sel] - np.convolve(adc[sel], np.ones(51) / 51, "same")
 log(f"LO ripple at ADC pin   {np.std(ripple[100:-100])*2.83*1e3:6.2f} mV pp (approx)")
 
+# Waveform plot, three panels:
+#   top     drain over two LO periods (the LO switching the BF961)
+#   middle  drain envelope vs RC filter output over 2.5 ms (the IF appears)
+#   bottom  ADC pin on the full 0..3.3 V range
 fig, ax = plt.subplots(3, 1, figsize=(10, 7.5))
 tz = (t > 1.0e-3) & (t < 1.0e-3 + 2.2 / FLO)
 ax[0].plot((t[tz] - 1e-3) * 1e9, drn[tz], color=C1)
@@ -188,7 +267,7 @@ ax[1].plot(t[sw] * 1e3, filt[sw], color=C1, label="after RC low-pass (filt)")
 ax[1].set(ylabel="V", xlabel="time (ms)", title="RC low-pass removes the LO, leaves the 3 kHz IF")
 ax[1].legend(loc="upper right", fontsize=8)
 ax[2].plot(t[sw] * 1e3, adc[sw], color=C1)
-ax[2].axhline(3.3, color=INK2, lw=1, ls="--")
+ax[2].axhline(3.3, color=INK2, lw=1, ls="--")     # ADC range limits
 ax[2].axhline(0, color=INK2, lw=1, ls="--")
 ax[2].set(ylabel="V(adc) (V)", xlabel="time (ms)", ylim=(-0.2, 3.5),
           title=f"ADC pin (GP26): 1.65 V mid-scale + {a_if*1e3:.0f} mV pk IF, inside 0..3.3 V")
@@ -197,6 +276,13 @@ fig.savefig(os.path.join(PLOTS, "mixer_waveforms.png"), dpi=130)
 plt.close(fig)
 
 # spectrum the RP2040 actually sees: sample V(adc) at 25 kS/s
+# Left panel: V(adc) resampled every 10 ns (100 MS/s) -> spectrum up to
+# 50 MHz, shown to 22 MHz: the LO at 7.1 MHz and its 3rd harmonic leak through.
+# Right panel: V(adc) sampled at the real ADC rate of 25 kS/s, like the
+# RP2040 does (no anti-alias filter other than the RC). Anything above
+# 12.5 kHz folds back into 0..12.5 kHz here.
+# Both use a Hann window; "* 2 / w.sum()" scales the FFT to peak amplitude,
+# so the y axis is dBV (0 dBV = 1 V peak).
 fig, ax = plt.subplots(1, 2, figsize=(10, 3.8))
 tu = np.arange(0.5e-3, t[-1], 1e-8)
 yu = np.interp(tu, t, adc)
@@ -219,10 +305,14 @@ fig.savefig(os.path.join(PLOTS, "mixer_spectrum.png"), dpi=130)
 plt.close(fig)
 
 # ------------------------------------------- step 3: IF response vs IF frequency
+# Repeat the mixer run with the RF tone at several offsets from the LO and
+# measure the IF amplitude each time. The result is the frequency response
+# of the whole chain at the IF, which is mostly the R5/C5 low-pass.
 log("\n== Conversion gain vs IF frequency (RF->ADC pin) ==")
 fifs = [0.3e3, 1e3, 2e3, 3e3, 5e3, 7e3, 10e3, 12.5e3, 15e3, 20e3]
 gains = []
 for fi in fifs:
+    # 0.4 ms settling + at least 1.2 ms or 3 IF periods, whichever is longer
     tstop = 0.4e-3 + max(1.2e-3, 3 / fi)
     ngspice("ifsweep", mixer_deck("ifsweep", FLO, fi, ARF, tstop, VS0, VD0))
     t, (adc, _, _) = load("ifsweep.txt", 3)
@@ -231,18 +321,22 @@ for fi in fifs:
     gains.append(g)
     log(f"IF {fi/1e3:5.1f} kHz   {g:6.1f} dB")
 # analytic single-pole for comparison
+# The capacitor C5 sees R4 + R5 (the drain side) in parallel with the
+# R6 || R7 = 50 kohm bias divider (through C6, which is a short at the IF).
 R5, C5 = 10e3, 3.3e-9
 Rth = R5 + 1e3            # drain load 1k in series with R5 ...
 Rload = 50e3              # ... loaded by the 100k/100k bias divider
 Req = 1 / (1 / Rth + 1 / Rload)
 fc = 1 / (2 * np.pi * Req * C5)
 log(f"RC corner (R4+R5 || R6||R7, C5): fc = {fc/1e3:.1f} kHz")
+# Ideal single-pole curve |H| = 1/sqrt(1+(f/fc)^2) in dB, lined up with the
+# simulated gain at 1 kHz (gains[1]) so the two curves can be compared.
 ff = np.logspace(2, np.log10(30e3), 200)
 pole = gains[1] - 10 * np.log10(1 + (ff / fc) ** 2) + 10 * np.log10(1 + (1e3 / fc) ** 2)
 fig, ax = plt.subplots(figsize=(7, 4))
 ax.plot(ff / 1e3, pole, color=GRID, lw=2.5, label=f"single pole, fc = {fc/1e3:.1f} kHz")
 ax.plot(np.array(fifs) / 1e3, gains, color=C1, marker="o", ms=6, label="ngspice transient")
-ax.axvline(ADC_FS / 2e3, color=INK2, lw=1, ls="--")
+ax.axvline(ADC_FS / 2e3, color=INK2, lw=1, ls="--")    # Nyquist = fs / 2
 ax.annotate("Nyquist 12.5 kHz", (ADC_FS / 2e3, max(gains)), xytext=(4, -2),
             textcoords="offset points", fontsize=8, color=INK2, va="top")
 ax.set(xscale="log", xlabel="IF frequency (kHz)", ylabel="RF -> ADC gain (dB)",
@@ -253,6 +347,9 @@ fig.savefig(os.path.join(PLOTS, "if_response.png"), dpi=130)
 plt.close(fig)
 
 # ------------------------------------------- step 4: large RF input, ADC range
+# Increase the RF amplitude from 1 mV to 1 V peak. Checks two things:
+# where the mixer starts to compress (output no longer grows linearly), and
+# that the ADC pin never leaves 0..3.3 V even with a very strong signal.
 log("\n== Large RF input: ADC pin stays inside 0..3.3 V ==")
 amps = [1e-3, 10e-3, 30e-3, 100e-3, 300e-3, 1.0]
 outs, mins, maxs = [], [], []
@@ -264,11 +361,13 @@ for a in amps:
     mins.append(adc[s].min()); maxs.append(adc[s].max())
     log(f"RF {a*1e3:7.1f} mV pk -> IF {outs[-1]*1e3:7.1f} mV pk, "
         f"ADC min {mins[-1]:.3f} V max {maxs[-1]:.3f} V")
+# Plot measured IF amplitude against the straight line the small-signal gain
+# would give; where they part, the mixer compresses.
 fig, ax = plt.subplots(figsize=(7, 4))
 ax.plot(np.array(amps) * 1e3, np.array(outs) * 1e3, color=C1, marker="o", label="IF amplitude at ADC")
 ax.plot(np.array(amps) * 1e3, np.array(amps) * 1e3 * 10 ** (gain_db / 20), color=GRID, lw=2.5,
         label="linear (small-signal gain)", zorder=0)
-ax.axhline(1650, color=INK2, lw=1, ls="--")
+ax.axhline(1650, color=INK2, lw=1, ls="--")    # largest swing around 1.65 V
 ax.annotate("full ADC swing (1.65 V pk)", (1, 1650), xytext=(0, 4),
             textcoords="offset points", fontsize=8, color=INK2)
 ax.set(xscale="log", yscale="log", xlabel="RF input (mV pk)", ylabel="IF at ADC (mV pk)",
@@ -280,6 +379,10 @@ plt.close(fig)
 
 # ------------------------------------------- step 5: power-up transient
 # 9 V and 3.3 V ramp from 0, all capacitors discharged, LO pin idle low (DC 0).
+# This is the worst moment for the ADC pin: C6 is empty, so when the drain
+# jumps up to ~7 V, C6 passes that jump straight on to adc_b. The BAT54S clamp
+# and R8 must keep GP26 below the RP2040's limit (IOVDD + 0.5 V = 3.8 V)
+# until C6 has charged. "uic" = start from 0 V everywhere, no operating point.
 deck = """* power-up
 .param flo=1meg frf=1meg arf=0
 .include mixer_core.inc
@@ -295,6 +398,10 @@ wrdata out/powerup.txt v(adc) v(adc_b) v(drain) v(vdd)
 .end
 """
 # V9/V33 are DC in the core netlist; give them a PWL for this one run
+# A temporary copy of the circuit is made with three text substitutions:
+#   V9  -> ramps 0 to 9 V in 1 ms      V33 -> ramps 0 to 3.3 V in 1 ms
+#   VLO -> stays at 0 V (firmware not running yet)
+# The copy is deleted again afterwards (also if ngspice fails).
 core = open(os.path.join(HERE, "mixer_core.inc")).read()
 core_pu = (core.replace("V9   vdd  0 DC 9", "V9   vdd  0 PWL(0 0 1m 9)")
                .replace("V33  v33  0 DC 3.3", "V33  v33  0 PWL(0 0 1m 3.3)")
@@ -321,6 +428,7 @@ fig.tight_layout()
 fig.savefig(os.path.join(PLOTS, "powerup.png"), dpi=130)
 plt.close(fig)
 
+# ------------------------------------------- write all numbers to one file
 with open(os.path.join(PLOTS, "results.txt"), "w") as fh:
     fh.write("\n".join(results) + "\n")
 print("\nplots and results.txt written to", os.path.abspath(PLOTS))

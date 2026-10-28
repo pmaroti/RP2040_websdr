@@ -1,0 +1,54 @@
+== DC operating point vs potentiometer position (50k pot, 15k top resistor) ==
+  pos   V(g2)   V(s)    VG2S    ID
+  0.00   0.00 V   1.17 V  -1.17 V   0.00 mA
+  0.10   0.69 V   1.40 V  -0.71 V   0.78 mA
+  0.20   1.38 V   1.82 V  -0.43 V   2.24 mA
+  0.30   2.08 V   2.22 V  -0.15 V   3.66 mA
+  0.40   2.77 V   2.52 V  +0.25 V   4.70 mA
+  0.50   3.46 V   2.59 V  +0.87 V   4.94 mA
+  0.60   4.15 V   2.59 V  +1.56 V   4.95 mA
+  0.70   4.85 V   2.60 V  +2.25 V   4.96 mA
+  0.80   5.54 V   2.60 V  +2.94 V   4.96 mA
+  0.90   6.23 V   2.60 V  +3.63 V   4.97 mA
+  1.00   6.92 V   2.60 V  +4.32 V   4.98 mA
+
+== Gain vs frequency (V(out)/V(in), out loaded by 100k || 6 pF) ==
+pos 1.00:  3.600 MHz  gain  18.4 dB,  input S11 -40.7 dB
+pos 1.00:  7.100 MHz  gain  20.3 dB,  input S11 -40.0 dB
+pos 1.00: 14.175 MHz  gain  19.6 dB,  input S11 -38.1 dB
+pos 1.00: 21.200 MHz  gain  18.0 dB,  input S11 -36.2 dB
+pos 1.00: 28.500 MHz  gain  16.3 dB,  input S11 -34.4 dB
+
+== Gain vs potentiometer position ==
+  pos 0.00:  -59.3 dB at 7.1 MHz,  -54.0 dB at 14.175 MHz
+  pos 0.10:  -22.7 dB at 7.1 MHz,  -23.4 dB at 14.175 MHz
+  pos 0.20:   -6.5 dB at 7.1 MHz,   -7.2 dB at 14.175 MHz
+  pos 0.30:    4.0 dB at 7.1 MHz,    3.3 dB at 14.175 MHz
+  pos 0.40:   13.6 dB at 7.1 MHz,   12.9 dB at 14.175 MHz
+  pos 0.50:   20.1 dB at 7.1 MHz,   19.4 dB at 14.175 MHz
+  pos 0.60:   20.2 dB at 7.1 MHz,   19.4 dB at 14.175 MHz
+  pos 0.70:   20.2 dB at 7.1 MHz,   19.5 dB at 14.175 MHz
+  pos 0.80:   20.2 dB at 7.1 MHz,   19.5 dB at 14.175 MHz
+  pos 0.90:   20.3 dB at 7.1 MHz,   19.6 dB at 14.175 MHz
+  pos 1.00:   20.3 dB at 7.1 MHz,   19.6 dB at 14.175 MHz
+control range at 7.1 MHz: 80 dB
+
+== Large signal at full gain, 7.1 MHz ==
+  in    1.0 mV pk -> out    10.5 mV pk  ( 20.3 dB)
+  in    3.0 mV pk -> out    31.4 mV pk  ( 20.3 dB)
+  in   10.1 mV pk -> out   104.5 mV pk  ( 20.3 dB)
+  in   30.2 mV pk -> out   313.5 mV pk  ( 20.3 dB)
+  in  100.8 mV pk -> out  1043.3 mV pk  ( 20.3 dB)
+  in  201.6 mV pk -> out  2064.3 mV pk  ( 20.2 dB)
+  in  302.5 mV pk -> out  3045.7 mV pk  ( 20.1 dB)
+  in  504.1 mV pk -> out  4825.9 mV pk  ( 19.6 dB)
+
+== Chain response: antenna -> bandpass -> (preamp) -> mixer RF input ==
+40m: at 7.100 MHz with preamp  19.5 dB, filter only  -0.8 dB; with preamp at 21.3 MHz (3rd LO harmonic)  -13.6 dB
+20m: at 14.175 MHz with preamp  18.6 dB, filter only  -1.0 dB; with preamp at 42.5 MHz (3rd LO harmonic)  -20.9 dB
+
+== Whole chain, transient: LO 7.1 MHz, antenna 1 mV pk EMF (50 ohm) at 7.103 MHz, IF 3 kHz at the ADC pin ==
+A  mixer alone                             IF    1.94 mV pk  ( +0.0 dB vs mixer alone)
+B  filter + 51R -> mixer                   IF    1.01 mV pk  ( -5.7 dB vs mixer alone)
+C  filter -> preamp (full) -> mixer        IF    8.27 mV pk  (+12.6 dB vs mixer alone)
+D  filter -> preamp (pot 0.30) -> mixer    IF    1.22 mV pk  ( -4.0 dB vs mixer alone)
