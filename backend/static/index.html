@@ -120,6 +120,7 @@
   }
   #readout .peak { color: var(--peak); }
   #readout .cursor { color: var(--muted); }
+  #readout .rf { font-size: 12px; opacity: 0.85; }
   /* Semi-transparent overlay shown while no data is arriving. */
   #notice {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -152,6 +153,11 @@
   <label>Bottom <input id="db-min" type="number" value="-120" step="10"> dB</label>
   <button id="peak-hold" aria-pressed="false">Peak hold</button>
   <button id="pause" aria-pressed="false">Pause</button>
+  <label>RF axis <select id="rf-axis">
+    <option value="1">LO + f</option>
+    <option value="-1">LO − f</option>
+    <option value="0">hide</option>
+  </select></label>
 </div>
 
 <!--
@@ -172,7 +178,10 @@
 <main>
   <div class="plot" id="spectrum-wrap">
     <canvas id="spectrum"></canvas>
-    <div id="readout"><div class="peak" id="peak"></div><div class="cursor" id="cursor"></div></div>
+    <div id="readout">
+      <div class="peak" id="peak"></div><div class="peak rf" id="peak-rf"></div>
+      <div class="cursor" id="cursor"></div><div class="cursor rf" id="cursor-rf"></div>
+    </div>
     <div id="notice">Waiting for data…</div>
   </div>
   <div class="plot" id="waterfall-wrap">
@@ -191,7 +200,8 @@ const color = (name) => css.getPropertyValue(name).trim();
 
 // Space around the spectrum plot for the axis labels, in CSS pixels. The
 // waterfall uses the same left/right padding so both line up in frequency.
-const PAD = { left: 52, right: 12, top: 10, bottom: 26 };
+// The bottom holds two label rows: IF (audio) frequency, then RF frequency.
+const PAD = { left: 52, right: 12, top: 10, bottom: 42 };
 
 // Page state.
 //   ws        the WebSocket connection
@@ -208,6 +218,10 @@ let paused = false;
 let streaming = false;
 let cursorX = null;
 let dirty = false;
+// Local oscillator (the square wave) in Hz, as the Pico reports it; null
+// while it is off or unknown. The mixer turns an RF signal at LO + f or
+// LO − f into the same IF tone f, so each IF frequency maps to two RF ones.
+let loHz = null;
 
 // ---------- WebSocket ----------
 
@@ -309,6 +323,8 @@ function showSqwState(text, cls, ok) {
 //   q.message    error text
 function onSquareWaveStatus(q) {
   if (!q) return;
+  const lo = q.state === "ok" && q.actual > 0 ? q.actual : null;
+  if (lo !== loHz) { loHz = lo; dirty = true; }
   if (q.requested) lastGoodHz = q.requested;
   if (!sqwEdited && document.activeElement !== $("sqw-input") && q.requested) {
     $("sqw-input").value = fmtFreq(q.requested);
@@ -414,6 +430,14 @@ function fmtHz(hz) {
   return hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 ? 2 : 0)} kHz` : `${hz.toFixed(hz < 10 ? 2 : 1)} Hz`;
 }
 
+// Format an RF frequency in MHz to 1 Hz, e.g. 7099000 -> "7.099000".
+const fmtRF = (hz) => (hz / 1e6).toFixed(6);
+
+// RF readout line for IF frequency f: both frequencies that land on it.
+function rfText(f) {
+  return loHz ? `RF ${fmtRF(loHz + f)} / ${fmtRF(loHz - f)} MHz` : "";
+}
+
 // ---------- Spectrum plot ----------
 
 // Draw the spectrum plot: grid and axis labels, the peak-hold trace (if on),
@@ -458,10 +482,29 @@ function drawSpectrum() {
   g.textBaseline = "top";
   // Vertical grid lines with frequency labels, about one per 90 px.
   const fStep = niceStep(nyq, Math.max(2, pw / 90));
+  // Second label row: the RF frequency (LO + f or LO − f, chosen with "RF
+  // axis") in MHz, with just enough decimals to show every label to the
+  // nearest Hz (the LO is rarely a round number, so usually all 6).
+  const side = +$("rf-axis").value;
+  let rfDec = 0;
+  const exact = (hz) => Math.abs(Math.round(hz / 10 ** (6 - rfDec)) * 10 ** (6 - rfDec) - hz) < 0.5;
+  while (rfDec < 6 && loHz && !(exact(Math.round(loHz)) && exact(fStep))) rfDec++;
   for (let f = 0; f <= nyq + 1e-9; f += fStep) {
     const x = Math.round(x0 + (f / nyq) * pw) + 0.5;
     g.beginPath(); g.moveTo(x, y0); g.lineTo(x, y1); g.stroke();
     g.fillText(fmtHz(f), x, y1 + 6);
+    if (loHz && side) {
+      // The first label starts at the axis instead of centring on it, to
+      // leave room for the row title on the left.
+      g.textAlign = f === 0 ? "left" : "center";
+      g.fillText(((loHz + side * f) / 1e6).toFixed(rfDec), f === 0 ? x0 : x, y1 + 22);
+      g.textAlign = "center";
+    }
+  }
+  if (loHz && side) {
+    g.textAlign = "left";
+    g.fillText(side > 0 ? "LO+f" : "LO−f", 2, y1 + 22);
+    g.fillText("IF", 2, y1 + 6);
   }
   g.save();
   // Rotated "dBFS" axis title.
@@ -517,7 +560,7 @@ function drawSpectrum() {
 
   // Cursor
   // Dashed vertical line under the mouse, with its frequency and level in the readout.
-  let cursorText = "";
+  let cursorText = "", cursorRF = "";
   if (cursorX != null && cursorX >= x0 && cursorX <= x1) {
     const ci = Math.round(((cursorX - x0) / pw) * (n - 1));
     const cf = (ci / (n - 1)) * nyq;
@@ -526,11 +569,14 @@ function drawSpectrum() {
     g.beginPath(); g.moveTo(cursorX + 0.5, y0); g.lineTo(cursorX + 0.5, y1); g.stroke();
     g.setLineDash([]);
     cursorText = `Cursor ${fmtHz(cf)}  ${db[ci].toFixed(1)} dBFS`;
+    cursorRF = rfText(cf);
   }
   g.restore();
 
   $("peak").textContent = `Peak ${fmtHz(pf)}  ${db[pi].toFixed(1)} dBFS`;
+  $("peak-rf").textContent = rfText(pf);
   $("cursor").textContent = cursorText;
+  $("cursor-rf").textContent = cursorRF;
 }
 
 // ---------- Waterfall ----------
@@ -630,7 +676,7 @@ $("fft-size").addEventListener("change", (e) => {
   send({ fft_size: +e.target.value });
 });
 $("averaging").addEventListener("input", (e) => send({ averaging: +e.target.value }));
-for (const id of ["db-min", "db-max"]) $(id).addEventListener("input", () => { dirty = true; });
+for (const id of ["db-min", "db-max", "rf-axis"]) $(id).addEventListener("input", () => { dirty = true; });
 // Peak hold toggle: start from the current spectrum when switched on.
 $("peak-hold").addEventListener("click", (e) => {
   const on = e.target.getAttribute("aria-pressed") !== "true";

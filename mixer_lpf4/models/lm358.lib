@@ -1,0 +1,78 @@
+* =============================================================================
+* LM358  dual low-power operational amplifier  -  behavioural model (one half)
+* =============================================================================
+*
+* WHAT THIS FILE IS
+*   A simple ngspice macromodel of ONE amplifier of the LM358, built from the
+*   typical values in the TI / onsemi LM358 datasheets. It is not the
+*   manufacturer's model (TI's PSpice model could not be downloaded here),
+*   but it covers what matters for a kHz audio-range filter:
+*     - open-loop gain, gain-bandwidth product and slew rate
+*     - single-supply operation: inputs and output work down to the
+*       negative rail (GND), the output only reaches about Vcc - 1.5 V
+*     - input bias current, input offset voltage, supply current
+*   It does NOT model noise, crossover distortion, temperature drift or the
+*   exact output current limits.
+*
+* DATASHEET VALUES USED (Vcc = 5 ... 30 V, Tamb = 25 C, typical)
+*   open-loop gain       Avol = 100 V/mV (100 dB)
+*   gain-bandwidth       GBW  = 0.7 MHz  (TI LM358; some sources give 1 MHz)
+*   slew rate            SR   = 0.3 V/us
+*   input offset         Vos  = 2 mV  (made a parameter, default 0)
+*   input bias current   Ib   = 20 nA, flowing OUT of the inputs (PNP input stage)
+*   output swing high    Voh  = Vcc - 1.5 V (light load)
+*   output swing low     Vol  = about 5 mV above V- (light load)
+*   input common mode    0 V ... Vcc - 1.5 V
+*   supply current       Icc  = 0.7 mA for the whole package; half per amplifier
+*
+* HOW THE MODEL WORKS
+*   1) Input stage: a transconductance G1 turns the differential input
+*      voltage into a current, limited to +/- ISL. That limit is what sets
+*      the slew rate.
+*   2) That current charges the "compensation" capacitor C1 at node "int"
+*      (the integrator inside every op-amp). R1 across C1 sets the DC gain:
+*        DC gain = GM * R1 = 1e5 (100 dB)
+*        unity-gain frequency = GM / (2*pi*C1) = 0.7 MHz
+*        slew rate = ISL / C1 = 0.3 V/us
+*   3) Diodes stop "int" from running away beyond the rails (so the model
+*      recovers from overload quickly, like the real part).
+*   4) Output stage: a voltage source copies "int", clipped to the range
+*      V- + 5 mV ... V+ - 1.5 V, through 25 ohm output resistance.
+*
+* PINS:  inp  non-inverting input (+)
+*        inn  inverting input (-)
+*        vcc  positive supply
+*        vee  negative supply (GND in a single-supply circuit)
+*        out  output
+* PARAMETER: vos = input offset voltage (default 0; try 2m or -2m to see
+*            the effect of a typical offset)
+*
+* Use:  XU1 inp inn vcc 0 out LM358
+* =============================================================================
+.subckt LM358 inp inn vcc vee out vos=0
+.param gm=88u c1=20p r1={1e5/gm} isl=6u
+* ---- input stage ------------------------------------------------------------
+* input bias currents, flowing out of the pins (PNP inputs), 20 nA each
+IBP inp vee 20n
+IBN inn vee 20n
+* large differential and common-mode input resistance
+RIN inp inn 10meg
+* transconductance with a current limit: I = clamp(gm * (vin + vos), +/- isl)
+* (current flows from vee into node int when the input is positive, so V(int) rises)
+G1 vee int cur='max(min(gm*(v(inp)-v(inn)+vos), isl), -isl)'
+* ---- integrator: sets DC gain, GBW and slew rate ----------------------------
+C1 int vee {c1}
+R1 int vee {r1}
+* keep "int" between the rails (fast overload recovery)
+* (EH copies the supply voltage so DH can clamp int to it; DL clamps to V-)
+EH vh vee vcc vee 1
+DH int vh DCL
+DL vee int DCL
+.model DCL D (IS=1e-14 N=0.2)
+* ---- output stage: follows int, limited to the LM358's output range --------
+* V- + 5 mV ... V+ - 1.5 V (the single-supply LM358 cannot reach V+)
+BOUT oo vee V='max(min(v(int,vee), v(vcc,vee)-1.5), 0.005)'
+ROUT oo out 25
+* ---- supply current: 0.35 mA per amplifier (half of the package's 0.7 mA) ---
+IQ vcc vee 0.35m
+.ends LM358
