@@ -140,6 +140,93 @@ Two optional stages can go in front of the mixer's RF input:
 `../rf_preamp/chain.png` shows how they connect. If you use a filter without
 the preamp, put 51 Ω from RF in to GND so that the filter sees its 50 Ω load.
 
+## Bench test results and troubleshooting (5 V build)
+
+These measurements come from the first breadboard build, with the
+simple RC version running from **5 V** (measured 5.21 V) instead of 9 V.
+For 5 V, **R3 is changed from 220 Ω to 470 Ω**, so that the BF961 keeps enough drain-source voltage.
+All other parts are as in the table above.
+
+### DC operating points
+
+With the LO stopped and gate 2 held at a fixed level (gate 1 at 0 V through R2):
+
+| G2 | V(R3) | V(R4) | I (from R3 / R4) | Source | Drain | Model (5.0 V) |
+|---|---|---|---|---|---|---|
+| 0 V | 3 mV | 8 mV | 6 µA / 8 µA | ≈ 0 V | ≈ 5.2 V | 1.12 mA, source 0.53 V, drain 3.88 V |
+| 3.3 V | 0.668 V | 1.385 V | 1.42 mA / 1.39 mA | 0.67 V | 3.83 V | 1.62 mA, source 0.76 V, drain 3.38 V |
+
+* With G2 at 0 V, the real BF961 is **fully off**, which is what a switching
+  mixer needs. The model still conducts there, because its gate-2 cut-off
+  is set too far negative (see the model section above). For G2 at 0 V,
+  trust the measurement, not the model.
+* With G2 at 3.3 V, VDS is 3.2 V, well inside the BF961's normal operating range. This
+  part draws about 12 % less current than the model.
+
+### With the LO running
+
+| Condition | Source (DC) | Drain (DC) | Average current |
+|---|---|---|---|
+| LO 7.1 MHz, RF input open | 0.74 V | 3.63 V | 1.57 mA |
+| LO 7.1 MHz, gate 1 grounded | 0.60 V | 4.09 V | 1.28 mA |
+| LO 3 MHz | 0.56 V | | 1.19 mA |
+| LO 100 kHz (from the scope: drain 5.2 V / 3.1 V square wave) | about 0.49 V (calculated) | | about 1.05 mA |
+
+What these show:
+
+1. **The switching itself is clean.** At 100 kHz the drain is a square wave
+   between 5.2 V (BF961 off, no current) and 3.1 V (2.1 mA on). The average is
+   half of the on-current, as expected for a 50 % LO.
+2. **LO pickup on gate 1.** With the RF input left open, gate 1 is a
+   high-impedance node, held only by the 100 kΩ R2. A pF or two of stray capacitance from the gate-2
+   wiring puts LO on it, and the BF961 rectifies that, so the average current rises (1.57 mA
+   instead of 1.28 mA). In normal use the antenna, the bandpass filter or the
+   preamp's 51 Ω input keeps gate 1 at low impedance through C1. **When nothing is connected,
+   put a 51 Ω resistor across RF in**, not a wire, which would also short the
+   RF.
+3. **The average current rises slowly with LO frequency** (1.05 → 1.19 →
+   1.28 mA from 100 kHz to 7.1 MHz). The G2 edges take a larger share of each
+   period, and the BF961 already conducts partway up an edge, so it is "on"
+   for about 57 % of the time at 3 MHz and about 61 % at 7 MHz instead of 50 %. This is
+   harmless: the BF961 stays in saturation, and the bandpass filter removes
+   the slightly stronger response at 2 × LO. Faster GP8 edges (12 mA drive, fast
+   slew in the firmware) bring the duty cycle back closer to 50 %. That is optional.
+4. **Drain waveform at 3 MHz: rounded rising edge, sharp falling edge with
+   ringing.** This is normal. When the BF961 turns off, only R4 (1 kΩ) pulls the drain up, charging
+   the drain and probe capacitance (τ ≈ 15 to 25 ns). When it turns on, the
+   transistor pulls the drain down hard. The ringing is mostly the probe's ground lead.
+   Use the short ground spring on the probe tip, grounded at the source or R3. If the
+   ringing stays, a 47 to 100 Ω resistor in series with the drain, right at the pin,
+   damps it.
+
+### Signal level at the ADC and on the spectrum page
+
+The spectrum page shows **dBFS**: 0 dBFS is a sine of ±1.65 V at the ADC
+(full scale), so level (dBFS) = 20·log10(V_peak / 1.65 V).
+
+| Test | IF at the ADC | Spectrum page |
+|---|---|---|
+| LO 700 kHz, RF 701 kHz, 200 mV | 256 mV pp | -45.5 dBFS (**wiring fault**, see below) |
+| LO 7.098 MHz, RF 7.099 MHz, 200 mV | ≈ 290 mV pp (level readout 1.48 to 1.87 V) | **-21.1 dBFS** |
+
+* **Wiring fault.** The first test read 23 dB too low, and GP26 sat at
+  **0.64 to 0.90 V instead of around 1.65 V**. The IF wire was on the wrong Pico pin.
+  A Pico pin that is not set up as an ADC input keeps its internal pull-down,
+  about 50 kΩ. That pull-down sits in parallel with R7 and drags the bias down to about 0.8 V, while the
+  ADC samples a different pin and sees only crosstalk. **Symptom to remember:
+  the IF pin sits near 0.8 V instead of 1.65 V.** In that case, check that the
+  wire goes to GP26 (Pico pin 31) and that the firmware uses `ADC_CHANNEL 0`.
+  `ADC_CHANNEL` is a CMake cache variable, so an old build folder can keep an old value.
+* **Correct result:** -21.1 dBFS is 145 mV peak of 1 kHz IF at the ADC.
+  For 200 mV of RF, that is a conversion gain of about -3 dB if 200 mV is the peak value. The
+  simulation predicts about +4 dB on 5 V. This part draws less current than the
+  model, so a few dB lower is expected. The IF uses only about 9 % of the ADC
+  range, so signals about 20 dB stronger would still fit.
+* The page's level readout (min to max V) is a little wider than the FFT
+  value, because it includes noise and the LO leakage. 7.098 MHz folds to
+  2 kHz at 25 kS/s, so a small spur there is normal. An FFT tone that falls
+  between two bins can also read up to 1.4 dB low.
+
 ## Running the simulation
 
 Needs ngspice (macOS: `brew install ngspice`) and, for the plots, Python 3 with
