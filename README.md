@@ -267,6 +267,19 @@ sent to every open page as a binary WebSocket message. Like `receive.py`, it
 keeps sending a datagram to the Pico's control port while no data arrives, so
 the stream finds it even after the Pico is replugged.
 
+## Go backend with AM / SSB receiver
+
+`backend-go/` is a Go version of the spectrum service with the same page and
+options, plus a receiver: pick AM, LSB or USB, a frequency and a bandwidth,
+and listen to the demodulated audio in the browser. It builds into a single
+binary or a small Docker image, with docker-compose files for reaching the
+Pico from a container. See [backend-go/README.md](backend-go/README.md).
+
+```sh
+cd backend-go
+go run .                      # or: docker compose up -d --build
+```
+
 ## Square wave output
 
 Connect to TCP port 7779 and send one command per line:
@@ -342,6 +355,7 @@ host/receive.py       host receiver for the sample stream
 host/setfreq.py       host client for the square wave
 backend/server.py     live spectrum web service
 backend/static/       web page (index.html)
+backend-go/           Go spectrum service with AM/SSB receiver, Dockerfile
 ```
 
 ## Credits

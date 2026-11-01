@@ -1,0 +1,27 @@
+# Bridge-network variant, for Docker Desktop (macOS / Windows) or when host
+# networking is not wanted.
+#
+#   docker compose -f docker-compose.bridge.yml up -d --build
+#
+# The container reaches the Pico through the host's routing and NAT:
+#   - TCP 7779 (LO frequency) is an ordinary outgoing connection.
+#   - The sample stream works because the backend asks for it: it sends a
+#     datagram to the Pico's port 7777 and the Pico streams back from port
+#     7777 to the address it came from. To the host's NAT the stream is the
+#     reply to that datagram, so it is forwarded into the container.
+#   - 7778/udp is published too, for the Pico's default destination
+#     (192.168.7.2:7778, before it has heard from the backend).
+
+services:
+  websdr:
+    build: .
+    image: pico-websdr:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080/tcp"
+      - "7778:7778/udp"
+    environment:
+      PICO_HTTP_PORT: "8080"
+      PICO_DEVICE: "192.168.7.1"
+      PICO_UDP_PORT: "7778"
+      PICO_FREQ: "7.1M"
